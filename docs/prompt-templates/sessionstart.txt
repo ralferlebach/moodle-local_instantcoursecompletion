@@ -1,0 +1,138 @@
+## SESSION-START: Sofortiger Kursabschluss – local_instantcoursecompletion
+
+Du arbeitest als erfahrener Moodle-Architekt und PHP-Entwickler
+an einem laufenden Projekt. Lies zunächst alles, was ich dir gebe,
+bevor du antwortest.
+
+---
+
+### A) Lastenheft, Pflichtenheft und Blueprint
+
+Das aktuelle Dokument liegt im Plugin-Repo:
+  docs/materials/Lastenheft_Pflichtenheft_Blueprint.md
+  (Kompaktfassung: docs/materials/Blueprint_kompakt.md)
+
+---
+
+### B) Kontext-Dokument der letzten Sitzung
+
+Das aktuelle Kontext-Dokument (sessionende der Vorsitzung) ist im Anhang
+zu finden. Ältere Kontext-Dokumente zwecks Referenz: docs/sessions/
+
+---
+
+### C) Aktueller Code
+
+Der aktuelle Plugin-Stand liegt als Patch-ZIP im Anhang, einzuspielen
+in die Moodle-Installation unter local/instantcoursecompletion/.
+
+Moodle-Installation: moodle45_aliseadele
+PHP: >= 8.1 (Moodle 4.5) bzw. >= 8.2 (Moodle 5.0)
+Moodle: >= 4.5 (2024100700); getestet: 4.5, 5.0. KEINE Abwärtskompatibilität < 4.5.
+
+Haupt-Dependencies:
+  KEINE. Integration mit local_adele ist OPTIONAL und wird zur Laufzeit erkannt
+  (get_config('local_adele', ...) + Verzeichnis-Check). Nicht in version.php deklariert.
+
+---
+
+### D) Aktueller Entwicklungsstand
+
+**Version:** 0.1.1 (2026070801)
+
+**Grundsatz (nicht ohne explizite Diskussion ändern):**
+  Lesart A — KEINE eigene Abschlusslogik. Das Plugin wertet vorhandene Moodle-
+  Completion-Kriterien nur früher und eingegrenzt aus (Observer -> Scope -> Kern-API).
+
+**Zuletzt abgeschlossen (Session 002):**
+  - Lint-Fixes: Lang-Dateien alphabetisch, keine Kommentar-Trennzeilen
+  - PHPDoc: Observer-Parameter auf konkrete Event-Typen gehoben (moodlecheck)
+  - Unit-Test-Ursache behoben: Trigger-Logik direkt testbar
+    (observer::handle_completion_trigger) statt Umweg über Einschreibung/Aktivität,
+    der im lokalen Environment den fremden local_adele-Observer auslöste
+  - phpunit.xml entfernt (redundant; Moodle generiert die Testsuite selbst)
+
+**Als nächstes geplant:**
+  Phase 2 — Kursebenen-Aggregation und Verbuchung in completion_booker::book():
+    - completion_completion::mark_complete() nach erfüllter Aggregation
+    - Aggregationsregeln (ALL/ANY, je Kriteriumstyp) exakt wie Kern spiegeln
+    - Versionsspezifische Integrationstests (4.5 und 5.0)
+  Phase 2 — reconcile_task für datums-/dauerbasierte Kriterien.
+
+---
+
+### E) Ziel dieser Sitzung
+
+Wir knüpfen an die Arbeiten an, die im aktuellen Kontext-Dokument
+und in der angehängten Code-Base vorliegen, und gehen, wenn der letzte
+Arbeitsschritt als vollumfänglich erfüllt angesehen wird, zum nächsten
+vorgesehenen Schritt in der Umsetzung über.
+
+Schlüssel-Entwurfsentscheidungen (nicht verändern ohne explizite Diskussion):
+  1. Lesart A: keine eigene Abschlusslogik; nur Kern-Completion-API
+     (completion_info, criteria review, completion_completion::mark_complete).
+  2. Scope-Modi: all / categories (inkl. Unterkategorien + Include-/Exclude-Tags)
+     / adele (delegiert Filterdefinition an local_adele, nur wenn installiert).
+  3. Observer schlank + wirft nie; schwere Arbeit in Adhoc-Task (async, Default)
+     oder synchron (sync, nur kleine Scopes).
+  4. Scope-Auflösung wird in MUC-Application-Cache gehalten und bei strukturellen
+     Änderungen (Kurs/Kategorie/Tag) sowie Settings-Änderungen invalidiert.
+  5. Dedup pro (courseid,userid) je Request; queue_adhoc_task($task, true).
+  6. Privacy: null_provider (kein eigener personenbezogener Datenbestand).
+  7. Keine harte local_adele-Dependency; eigenständig lauffähig.
+  8. CI ohne Fremd-Plugins (--no-init + manuelles init.php); Matrix 4.5/5.0.
+
+Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
+  - Lang-Dateien: alphabetisch sortiert, keine Kommentar-Trennzeilen
+  - Keine Leerzeile nach öffnender { (Klasse, Methode, Block)
+  - Genau 1 Space nach Komma; keine Alignment-Paddings
+  - Inline-Kommentare: Großbuchstabe/Ziffer am Anfang, Satzzeichen am Ende
+  - Keine MOODLE_INTERNAL-Guards in Klassen-Dateien (classes/); auch nicht in
+    reinen Funktions-/Generator-Dateien ohne Seiteneffekte (lib.php, tests/generator)
+  - Kein "TODO"/"@todo"-Token in ausgeliefertem Code (moodlecheck verlangt MDL-Ref)
+  - @param-Typ muss dem tatsächlichen Type-Hint exakt entsprechen
+  - Observer dürfen nie fatal werfen (try/catch, debugging statt Exception)
+  - Tests: keine Einschreibung/Events auslösen, wenn nicht nötig — fremde
+    Plugin-Observer (z. B. local_adele) können unter PHPUnit debugging() auslösen
+  - Statische Dedup-Register in Tests via reset_seen()/setUp zurücksetzen
+    (DB-IDs werden von resetAfterTest zurückgesetzt, Statics nicht)
+
+---
+
+### F) Modus zur Delivery
+
+- Code-Changes immer ausliefern als Patch-ZIP: eine ZIP-Datei, die NUR
+  die geänderten Dateien enthält (kein .git-Ordner, keine docs/-Dateien)
+- Patch-ZIPs erhalten einen durchnummerierten Namen (patch-0.X.YY.zip),
+  die Version in version.php orientiert sich am aktuellen Datum und wird
+  mit jeder Iteration hochgezählt (Format: YYYYMMDDNN, z.B. 2026070801)
+- Zu jeder Änderung eine einzeilige Kurzbeschreibung des Commits (englisch)
+  sowie bis zu 5 Stichpunkte zu den vorgenommenen Änderungen.
+  Diese Angaben als MD-Code DIREKT UNTER dem Download-Link der Patch-ZIP
+- Bei der Code-Generierung immer die Moodle-Coding-Standards einhalten:
+    - GPL-Boilerplate-Header in jeder Datei
+    - PHPDoc für alle Klassen, Methoden und Properties
+    - Short array syntax ([] statt array())
+    - Keine Leerzeile nach öffnender {
+    - Multiline-Argumente: jedes Argument auf eigener Zeile
+    - Genau 1 Space nach Komma in Argumentlisten (kein Alignment-Padding)
+    - Inline-Kommentare: Großbuchstabe/Ziffer am Anfang, Punkt/!/? am Ende
+    - Keine MOODLE_INTERNAL-Guards in Klassen-Dateien (classes/)
+    - Membervariablen: all lowercase (kein camelCase)
+    - Lang-Strings: alphabetisch sortiert, keine Kommentar-Trennzeilen
+    - PHPUnit-Tests: basic_testcase ohne DB, advanced_testcase mit DB
+    - @covers-Annotation in jeder Testklasse
+- Author: Ralf Erlebach, Jahr: 2026, Lizenz: GPL v3 or later
+- Bei Unklarheiten und auftretenden Fehlern: Shell-Skripte, SQL-Abfragen
+  und JS-Skripte für die Konsole mitliefern. Diagnose-Skripte werden
+  grundsätzlich nur im Chat-Fenster ausgeliefert, nie als Download!
+
+Bevor du beginnst:
+1. Bestätige kurz, was du aus dem Kontext-Dokument und den
+   Dateien verstanden hast.
+2. Benenne, falls vorhanden, Widersprüche oder fehlende
+   Informationen, die du für die heutige Aufgabe brauchst.
+3. Warte dann auf meine Freigabe, bevor du Code schreibst.
+
+Liefere nun eine kurze Einschätzung zu den bevorstehenden Arbeiten
+und den drei Punkten oben!
