@@ -30,7 +30,7 @@ namespace local_instantcoursecompletion;
 
 defined('MOODLE_INTERNAL') || die();
 
-require_once(__DIR__ . '/fixtures/due_criteria_test_trait.php');
+require_once(__DIR__ . '/fixtures/completion_test_trait.php');
 
 /**
  * Due scheduler tests.
@@ -38,7 +38,7 @@ require_once(__DIR__ . '/fixtures/due_criteria_test_trait.php');
  * @covers \local_instantcoursecompletion\due_scheduler
  */
 final class due_scheduler_test extends \advanced_testcase {
-    use due_criteria_test_trait;
+    use completion_test_trait;
 
     /**
      * Load completionlib, reset state and enable scheduling.
@@ -164,6 +164,20 @@ final class due_scheduler_test extends \advanced_testcase {
 
         $this->enrol_user_direct($course, $user, time() - DAYSECS * 10, time() - DAYSECS * 10, time() - DAYSECS);
         $this->assertSame(0, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
+    }
+
+    /**
+     * A teacher does not hold moodle/course:isincompletionreports and is never planned.
+     *
+     * @return void
+     */
+    public function test_schedule_user_skips_untracked_users(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $teacher = $this->getDataGenerator()->create_user();
+        $this->add_date_criterion($course, time() + DAYSECS);
+        $this->enrol_user_direct($course, $teacher, 0, 0, 0, 'editingteacher');
+
+        $this->assertSame(0, due_scheduler::schedule_user((int)$course->id, (int)$teacher->id));
     }
 
     /**

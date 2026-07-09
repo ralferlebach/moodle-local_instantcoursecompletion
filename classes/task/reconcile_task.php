@@ -25,6 +25,7 @@
 namespace local_instantcoursecompletion\task;
 
 use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
 /**
@@ -34,11 +35,8 @@ class reconcile_task extends \core\task\scheduled_task {
     /** @var string Frankenstyle component name. */
     protected const COMPONENT = 'local_instantcoursecompletion';
 
-    /** @var string Config key holding the ID of the last fully processed course. */
+    /** @var string Config key holding the position to resume from. */
     protected const CURSOR = 'reconcilecursor';
-
-    /** @var int Upper bound on the (course, user) pairs evaluated in one run. */
-    protected const MAX_PAIRS_PER_RUN = 5000;
 
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
@@ -55,9 +53,11 @@ class reconcile_task extends \core\task\scheduled_task {
     /**
      * Evaluate pending completions for a bounded slice of the configured scope.
      *
-     * Progress is kept in a cursor over course IDs, so consecutive runs advance
-     * through the site instead of restarting. The cursor wraps once the last course
-     * has been reached.
+     * The cursor carries a course and the last user examined inside it. Progress is
+     * measured in users examined, never in completions booked: the users this task
+     * exists for are precisely the ones that do not complete yet, and a run that only
+     * advanced on success would examine the same slice forever and never reach the
+     * courses behind it.
      *
      * @return void
      */
@@ -67,63 +67,101 @@ class reconcile_task extends \core\task\scheduled_task {
         }
 
         $logging = (bool)get_config(self::COMPONENT, 'enablelogging');
-        $cursor = (int)get_config(self::COMPONENT, self::CURSOR);
-        $budget = self::MAX_PAIRS_PER_RUN;
-        $courseids = $this->eligible_course_ids($cursor);
+        $budget = self::max_users_per_run();
 
+        $cursor = $this->get_cursor();
+        $courseids = $this->eligible_course_ids($cursor['courseid']);
         if (empty($courseids)) {
-            $this->set_cursor(0);
-            if ($logging) {
-                mtrace('local_instantcoursecompletion reconcile_task: no eligible courses, cursor reset.');
-            }
+            $this->set_cursor(0, 0);
             return;
         }
 
+        $scanned = 0;
         $booked = 0;
-        $courses = 0;
+        $failed = 0;
         $exhausted = false;
 
         foreach ($courseids as $courseid) {
-            $limit = $budget;
-            [$coursebooked, $processed] = $this->process_course((int)$courseid, $limit);
-            $booked += $coursebooked;
-            $budget -= $processed;
-            $courses++;
-
-            if ($processed >= $limit) {
-                // The course may hold further users; resume from the same course next run.
+            if ($scanned >= $budget) {
                 $exhausted = true;
                 break;
             }
 
-            $this->set_cursor((int)$courseid);
-            if ($budget <= 0) {
+            if (!scope_resolver::is_in_scope($courseid)) {
+                $this->set_cursor($courseid + 1, 0);
+                continue;
+            }
+
+            $fromuserid = ($courseid === $cursor['courseid']) ? $cursor['lastuserid'] : 0;
+            $result = $this->process_course($courseid, $fromuserid, $budget - $scanned);
+
+            $scanned += $result['scanned'];
+            $booked += $result['booked'];
+            $failed += $result['failed'];
+
+            if ($result['more']) {
+                $this->set_cursor($courseid, $result['lastuserid']);
                 $exhausted = true;
                 break;
             }
+
+            $this->set_cursor($courseid + 1, 0);
         }
 
         if (!$exhausted && count($courseids) < self::MAX_COURSES_PER_RUN) {
             // The last course of the site has been reached; start over next run.
-            $this->set_cursor(0);
+            $this->set_cursor(0, 0);
         }
 
-        if ($logging) {
+        if ($logging || $failed > 0) {
             mtrace('local_instantcoursecompletion reconcile_task:'
-                . ' courses=' . $courses
+                . ' courses=' . count($courseids)
+                . ' scanned=' . $scanned
                 . ' booked=' . $booked
-                . ' remainingbudget=' . max(0, $budget));
+                . ' failed=' . $failed);
         }
     }
 
     /**
-     * Persist the cursor position.
+     * Upper bound on the users examined in one run.
      *
-     * @param int $courseid Last fully processed course ID, or 0 to restart.
+     * @return int
+     */
+    protected static function max_users_per_run(): int {
+        $max = (int)get_config(self::COMPONENT, 'reconcilebudget');
+        return $max > 0 ? $max : 5000;
+    }
+
+    /**
+     * The position the next run resumes from.
+     *
+     * @return array{courseid: int, lastuserid: int}
+     */
+    protected function get_cursor(): array {
+        $raw = get_config(self::COMPONENT, self::CURSOR);
+        $data = is_string($raw) ? json_decode($raw, true) : null;
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        return [
+            'courseid' => (int)($data['courseid'] ?? 0),
+            'lastuserid' => (int)($data['lastuserid'] ?? 0),
+        ];
+    }
+
+    /**
+     * Persist the position the next run resumes from.
+     *
+     * @param int $courseid   First course to examine, or 0 to start over.
+     * @param int $lastuserid Last user examined in that course.
      * @return void
      */
-    protected function set_cursor(int $courseid): void {
-        set_config(self::CURSOR, $courseid, self::COMPONENT);
+    protected function set_cursor(int $courseid, int $lastuserid): void {
+        set_config(self::CURSOR, json_encode([
+            'courseid' => $courseid,
+            'lastuserid' => $lastuserid,
+        ]), self::COMPONENT);
     }
 
     /**
@@ -132,76 +170,86 @@ class reconcile_task extends \core\task\scheduled_task {
      * The scope filter is applied per course in PHP rather than as an IN clause, so the
      * query never carries an unbounded parameter list.
      *
-     * @param int $cursor Only courses with a higher ID are returned.
+     * @param int $fromcourseid Lowest course ID to return; the cursor may point inside it.
      * @return int[] Ordered course IDs, at most MAX_COURSES_PER_RUN of them.
      */
-    protected function eligible_course_ids(int $cursor): array {
+    protected function eligible_course_ids(int $fromcourseid): array {
         global $DB;
 
         $courseids = $DB->get_fieldset_sql(
             "SELECT DISTINCT cc.course
                FROM {course_completion_criteria} cc
                JOIN {course} c ON c.id = cc.course AND c.enablecompletion = 1
-              WHERE cc.course <> :siteid AND cc.course > :cursor
+              WHERE cc.course <> :siteid AND cc.course >= :fromcourseid
            ORDER BY cc.course ASC",
-            ['siteid' => SITEID, 'cursor' => $cursor],
+            ['siteid' => SITEID, 'fromcourseid' => $fromcourseid],
             0,
             self::MAX_COURSES_PER_RUN
         );
 
-        if (scope_resolver::get_mode() === scope_resolver::SCOPE_ALL) {
-            return array_map('intval', $courseids);
-        }
-
-        return array_values(array_filter(
-            array_map('intval', $courseids),
-            static fn($courseid) => scope_resolver::is_in_scope($courseid)
-        ));
+        return array_map('intval', $courseids);
     }
 
     /**
-     * Evaluate pending completions for one course, up to the remaining budget.
+     * Evaluate pending completions for one course, resuming after the given user.
      *
-     * Only users whose enrolment is active right now are considered; get_enrolled_sql()
-     * applies enrolment status, start and end dates and the plugin-enabled state.
+     * Only tracked users are considered: get_enrolled_sql() applies enrolment status,
+     * start and end dates, the plugin-enabled state, and the capability that decides
+     * whose progress Moodle follows at all.
      *
-     * @param int $courseid Course to process.
-     * @param int $budget   Maximum number of users to evaluate.
-     * @return int[] Two elements: bookings made, users processed.
+     * @param int $courseid   Course to process.
+     * @param int $fromuserid Only users with a higher ID are examined.
+     * @param int $budget     Maximum number of users to examine.
+     * @return array{scanned: int, booked: int, failed: int, lastuserid: int, more: bool}
      */
-    protected function process_course(int $courseid, int $budget): array {
+    protected function process_course(int $courseid, int $fromuserid, int $budget): array {
         global $DB;
 
-        [$enrolledsql, $params] = get_enrolled_sql(\context_course::instance($courseid), '', 0, true);
+        $context = \context_course::instance($courseid);
+        [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
         $params['courseid'] = $courseid;
+        $params['fromuserid'] = $fromuserid;
 
         $sql = "SELECT enrolled.id AS userid
                   FROM ($enrolledsql) enrolled
              LEFT JOIN {course_completions} cco
                     ON cco.userid = enrolled.id AND cco.course = :courseid
-                 WHERE cco.timecompleted IS NULL OR cco.timecompleted = 0
+                 WHERE (cco.timecompleted IS NULL OR cco.timecompleted = 0)
+                   AND enrolled.id > :fromuserid
               ORDER BY enrolled.id ASC";
 
+        $scanned = 0;
         $booked = 0;
-        $processed = 0;
-        $recordset = $DB->get_recordset_sql($sql, $params, 0, $budget);
+        $failed = 0;
+        $lastuserid = $fromuserid;
 
+        $recordset = $DB->get_recordset_sql($sql, $params, 0, $budget);
         foreach ($recordset as $record) {
-            $processed++;
+            $scanned++;
+            $lastuserid = (int)$record->userid;
+
             try {
-                if (completion_booker::book($courseid, (int)$record->userid)) {
+                if (completion_booker::book($courseid, $lastuserid)) {
                     $booked++;
                 }
             } catch (\Throwable $e) {
+                $failed++;
                 debugging(
                     'local_instantcoursecompletion reconcile_task:'
-                    . " course={$courseid} user={$record->userid}: " . $e->getMessage(),
+                    . " course={$courseid} user={$lastuserid}: " . $e->getMessage(),
                     DEBUG_DEVELOPER
                 );
             }
         }
         $recordset->close();
 
-        return [$booked, $processed];
+        // A full page means there may be more users behind it.
+        return [
+            'scanned' => $scanned,
+            'booked' => $booked,
+            'failed' => $failed,
+            'lastuserid' => $lastuserid,
+            'more' => $scanned >= $budget,
+        ];
     }
 }

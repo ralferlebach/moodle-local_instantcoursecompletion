@@ -8,6 +8,85 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-07-09
+
+Phase A des externen Reviews: Fortschrittsgarantie für beide Scheduled Tasks und
+Beschränkung auf getrackte Nutzer. Die drei P0-Befunde sind damit behoben.
+
+### Fixed — Fortschrittsgarantie (P0)
+
+- **`discover_due_criteria_task` übersprang den Nutzer-Tail eines Kurses.** Der Cursor
+  enthielt nur eine Kurs-ID, und der Fortschritt wurde an *eingereihten Tasks* gemessen.
+  Im zweiten Lauf über eine bereits geplante Seite lieferte `$made = 0`, der Kurs galt
+  als fertig, der Cursor rückte vor — die Nutzer dahinter wurden nie geplant.
+  Neu: zusammengesetzter Keyset-Cursor `{courseid, criteriaid, lastuserid}` mit
+  `AND enrolled.id > :fromuserid ORDER BY enrolled.id ASC`. Das Budget zählt jetzt
+  **geprüfte Datensätze**; ein bereits geplanter Nutzer verbraucht Budget und rückt den
+  Cursor vor. `scanned` und `queued` werden getrennt geführt und protokolliert.
+- **`reconcile_task` konnte sich vollständig festfahren.** Der Task misst `$processed`,
+  brach bei `$processed >= $limit` ab und schrieb den Cursor nicht fort. Ein Kurs mit
+  mindestens `budget` dauerhaft unvollständigen Nutzern — der Normalfall für ein
+  Sicherheitsnetz — friert damit jeden Lauf an derselben Stelle ein: weder die Nutzer
+  dahinter noch **irgendein nachfolgender Kurs der Instanz** wurden je erreicht.
+  Neu: Keyset-Cursor `{courseid, lastuserid}`, Fortschritt je geprüftem Nutzer,
+  unabhängig vom Buchungsergebnis. Fehlerzähler `failed` im `mtrace()`, das jetzt auch
+  bei abgeschalteter Protokollierung erscheint, sobald ein Fehler auftrat.
+
+### Fixed — Getrackte Nutzer (P0)
+
+- **Nur Nutzer mit `moodle/course:isincompletionreports` werden verarbeitet.**
+  `completion_info::is_tracked_user()` und `get_tracked_users()` gaten auf diese
+  Capability; wir übergaben `''` an `get_enrolled_sql()`. Eingeschriebene Lehrende
+  konnten dadurch Fälligkeits-Tasks und einen `course_completions`-Datensatz erhalten.
+  Neu: `due_scheduler::TRACKED_CAPABILITY` in beiden Tasks und in
+  `due_scheduler::schedule_user()`, sowie `$info->is_tracked_user()` als Guard in
+  `completion_booker::book()` — hinter der Prüfung „bereits abgeschlossen", damit ein
+  bestehender Abschluss unabhängig von der heutigen Rolle gemeldet wird.
+  Anmerkung: Moodles eigener Kriterien-Cron ist hier lockerer
+  (`completion_criteria_duration::cron()` liest `{user_enrolments}` ohne
+  Capability-Filter). Wir folgen bewusst der Semantik der Abschlussberichte.
+
+### Added
+
+- Einstellung `reconcilebudget` (Default 5000): Obergrenze der je Abgleichslauf
+  geprüften Nutzer. Bisher eine Klassenkonstante und damit weder anpassbar noch testbar.
+- `db/upgrade.php`: verwirft die alten ganzzahligen Cursor-Werte. `get_cursor()` würde
+  sie ohnehin verwerfen, aber ein stehengelassener Fremdwert ist ein Arbeitsrückstand.
+
+### Changed
+
+- `setting:maxtasksperrun` beschreibt jetzt geprüfte Einschreibungs-Datensätze statt
+  eingereihter Tasks — die Semantik hat sich mit der Fortschrittsgarantie geändert.
+- `tests/fixtures/due_criteria_test_trait.php` → `tests/fixtures/completion_test_trait.php`.
+  Der Trait deckt jetzt alle vier Completion-Testklassen ab und weist bei
+  `enrol_user_direct()` eine Rolle zu; ohne Rolle ist niemand getrackt.
+- `complete_activity()` nutzt `update_state(..., $isbulkupdate = true)`. Ohne das
+  aggregiert Moodle den Kurs sofort selbst, sobald der Nutzer eine Rollenzuweisung hat
+  (`mark_course_completions_activity_criteria()` joint `{role_assignments}`) — die Tests
+  hätten dann den Core gemessen, nicht das Plugin.
+
+### Added — Regressionstests (P0)
+
+- `discover_due_criteria_task`: fünf Nutzer, Budget 2, drei Läufe — jeder Nutzer genau
+  einmal geplant; ein budgetfüllender Kurs blockiert den nächsten Kurs nicht;
+  Lehrende werden nicht geplant.
+- `reconcile_task`: vier Nutzer, Budget 2, davon drei die nie abschließen — der vierte
+  wird im zweiten Lauf erreicht; ein budgetfüllender Kurs blockiert den nächsten nicht;
+  Lehrende werden nicht gebucht; Cursor-Reset nach vollständigem Durchlauf.
+- `completion_booker`: Lehrende und Eingeschriebene ohne Rolle werden nicht gebucht.
+- `due_scheduler`: Lehrende werden nicht geplant.
+
+### Offen (Phase B–E des Reviews)
+
+- Zukunfts-Tasks über `reschedule_or_queue_adhoc_task()` oder eine eigene
+  Planungstabelle deduplizieren; der direkte `{task_adhoc}`-Prefetch ist unter
+  Retry-Backoff nachweislich falsch.
+- Batch-Task statt eines Ad-hoc-Tasks je Nutzer.
+- Locks, Fehlerzähler, Einstellungsvalidierung, `get_by_name_bulk()`,
+  begrenztes Fan-out abhängiger Kurse.
+- README: „It adds no completion logic of its own" durch einen Abschnitt
+  *Compatibility Logic* ersetzen. `composer.json` ergänzen.
+
 ## [0.4.6] - 2026-07-09
 
 Ereignisgesteuerte Sofortplanung (ursprünglich für 1.1 vorgesehen), CI-Fix für die
@@ -79,11 +158,6 @@ Behat-JavaScript-Szenarien, phpcs-Warnung in `db/upgrade.php`.
   Zeilen mit 36 Tokens, deutlich unter der Schwelle von 70.
 - **phpcs-Warnung** in `due_scheduler.php`: Inline-Kommentar begann kleingeschrieben
   mit dem Funktionsnamen `queue_adhoc_task()`. Umformuliert.
-- **phpcs-Fehler** in beiden Due-Tests: das neue `require_once` der Fixture-Datei ist
-  eine Änderung des globalen Zustands und verlangt daher einen
-  `defined('MOODLE_INTERNAL') || die();`-Guard. Ergänzt in der von Moodle Core
-  verwendeten Reihenfolge `namespace` → `use` → `defined` → `require_once`. Der Trait
-  selbst definiert nur eine Klasse und bleibt korrekt ohne Guard.
 
 ### Offen
 

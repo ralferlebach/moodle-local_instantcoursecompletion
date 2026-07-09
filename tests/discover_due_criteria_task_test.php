@@ -31,7 +31,7 @@ use local_instantcoursecompletion\task\discover_due_criteria_task;
 
 defined('MOODLE_INTERNAL') || die();
 
-require_once(__DIR__ . '/fixtures/due_criteria_test_trait.php');
+require_once(__DIR__ . '/fixtures/completion_test_trait.php');
 
 /**
  * Discovery task tests.
@@ -40,7 +40,7 @@ require_once(__DIR__ . '/fixtures/due_criteria_test_trait.php');
  * @covers \local_instantcoursecompletion\task\book_due_completion_task
  */
 final class discover_due_criteria_task_test extends \advanced_testcase {
-    use due_criteria_test_trait;
+    use completion_test_trait;
 
     /**
      * Load completionlib, reset state and enable scheduling.
@@ -183,7 +183,6 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
         $this->enrol_user_direct($course, $user);
 
         (new discover_due_criteria_task())->execute();
-        set_config('schedulecursor', 0, 'local_instantcoursecompletion');
         (new discover_due_criteria_task())->execute();
 
         $this->assertCount(1, $this->queued_tasks());
@@ -280,11 +279,11 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
     }
 
     /**
-     * The per-run budget caps the number of tasks queued.
+     * The per-run budget caps the enrolment records examined.
      *
      * @return void
      */
-    public function test_budget_caps_tasks_per_run(): void {
+    public function test_budget_caps_records_examined_per_run(): void {
         set_config('maxtasksperrun', 2, 'local_instantcoursecompletion');
 
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
@@ -296,6 +295,83 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
         (new discover_due_criteria_task())->execute();
 
         $this->assertCount(2, $this->queued_tasks());
+    }
+
+    /**
+     * Consecutive runs plan every user exactly once, never re-examining the first page.
+     *
+     * Progress is measured in records examined. A run that measured it in tasks queued
+     * would see zero on its second pass over an already-planned page, conclude that the
+     * course was finished, and leave the users behind that page unplanned forever.
+     *
+     * @return void
+     */
+    public function test_consecutive_runs_plan_every_user_exactly_once(): void {
+        set_config('maxtasksperrun', 2, 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $this->add_date_criterion($course, time() + DAYSECS);
+
+        $userids = [];
+        for ($i = 0; $i < 5; $i++) {
+            $user = $this->getDataGenerator()->create_user();
+            $this->enrol_user_direct($course, $user);
+            $userids[] = (int)$user->id;
+        }
+        sort($userids);
+
+        (new discover_due_criteria_task())->execute();
+        $this->assertCount(2, $this->queued_tasks());
+
+        (new discover_due_criteria_task())->execute();
+        $this->assertCount(4, $this->queued_tasks());
+
+        (new discover_due_criteria_task())->execute();
+        $this->assertCount(5, $this->queued_tasks());
+
+        $this->assertSame($userids, $this->queued_user_ids());
+    }
+
+    /**
+     * A course that fills the budget does not block the courses behind it.
+     *
+     * @return void
+     */
+    public function test_consecutive_runs_reach_the_next_course(): void {
+        set_config('maxtasksperrun', 2, 'local_instantcoursecompletion');
+
+        $first = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $this->add_date_criterion($first, time() + DAYSECS);
+        for ($i = 0; $i < 2; $i++) {
+            $this->enrol_user_direct($first, $this->getDataGenerator()->create_user());
+        }
+
+        $second = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $this->add_date_criterion($second, time() + DAYSECS);
+        $user = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($second, $user);
+
+        (new discover_due_criteria_task())->execute();
+        (new discover_due_criteria_task())->execute();
+
+        $this->assertCount(3, $this->queued_tasks());
+        $this->assertContains((int)$user->id, $this->queued_user_ids());
+    }
+
+    /**
+     * A teacher does not hold moodle/course:isincompletionreports and is never planned.
+     *
+     * @return void
+     */
+    public function test_untracked_users_are_not_planned(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $teacher = $this->getDataGenerator()->create_user();
+        $this->add_date_criterion($course, time() + DAYSECS);
+        $this->enrol_user_direct($course, $teacher, 0, 0, 0, 'editingteacher');
+
+        (new discover_due_criteria_task())->execute();
+
+        $this->assertCount(0, $this->queued_tasks());
     }
 
     /**

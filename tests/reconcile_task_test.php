@@ -17,9 +17,6 @@
 /**
  * Tests for the reconcile scheduled task.
  *
- * Enrolment records are written directly so that user_enrolment_created stays silent;
- * other installed plugins observe that event and misbehave under PHPUnit.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -29,14 +26,20 @@ namespace local_instantcoursecompletion;
 
 use local_instantcoursecompletion\task\reconcile_task;
 
+defined('MOODLE_INTERNAL') || die();
+
+require_once(__DIR__ . '/fixtures/completion_test_trait.php');
+
 /**
  * Reconcile task tests.
  *
  * @covers \local_instantcoursecompletion\task\reconcile_task
  */
 final class reconcile_task_test extends \advanced_testcase {
+    use completion_test_trait;
+
     /**
-     * Load completionlib and reset the database before each test.
+     * Load completionlib and reset state.
      *
      * @return void
      */
@@ -45,77 +48,19 @@ final class reconcile_task_test extends \advanced_testcase {
         parent::setUp();
         require_once($CFG->libdir . '/completionlib.php');
         $this->resetAfterTest(true);
+        criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
     }
 
     /**
-     * Insert an active manual enrolment without firing user_enrolment_created.
+     * Whether the course is complete for the user.
      *
-     * @param \stdClass $course    Course record.
-     * @param \stdClass $user      User record.
-     * @param int       $timestart Enrolment start, 0 for none.
-     * @param int       $timeend   Enrolment end, 0 for none.
-     * @return void
+     * @param \stdClass $course The course.
+     * @param \stdClass $user   The user.
+     * @return bool
      */
-    protected function enrol_user_direct(\stdClass $course, \stdClass $user, int $timestart = 0, int $timeend = 0): void {
-        global $DB;
-
-        $enrolrec = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual']);
-        if ($enrolrec) {
-            $enrolid = (int)$enrolrec->id;
-        } else {
-            $enrolid = $DB->insert_record('enrol', (object)[
-                'enrol' => 'manual',
-                'courseid' => (int)$course->id,
-                'status' => 0,
-                'sortorder' => 0,
-                'timecreated' => time(),
-                'timemodified' => time(),
-            ]);
-        }
-
-        $DB->insert_record('user_enrolments', (object)[
-            'enrolid' => $enrolid,
-            'userid' => (int)$user->id,
-            'status' => 0,
-            'timestart' => $timestart,
-            'timeend' => $timeend,
-            'modifierid' => 0,
-            'timecreated' => time(),
-            'timemodified' => time(),
-        ]);
-    }
-
-    /**
-     * Create a course with a satisfied activity criterion for the given user.
-     *
-     * @param \stdClass $user     User record.
-     * @param bool      $complete Whether to mark the activity complete.
-     * @return \stdClass The course record.
-     */
-    protected function course_with_activity_criterion(\stdClass $user, bool $complete): \stdClass {
-        global $DB;
-
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $page = $this->getDataGenerator()->create_module('page', [
-            'course' => $course->id,
-            'completion' => COMPLETION_TRACKING_MANUAL,
-        ]);
-        $cm = get_coursemodule_from_id('page', $page->cmid);
-
-        $DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_ACTIVITY,
-            'module' => 'page',
-            'moduleinstance' => (int)$cm->id,
-            'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
-        ]);
-
-        if ($complete) {
-            (new \completion_info($course))->update_state($cm, COMPLETION_COMPLETE, (int)$user->id);
-        }
-
-        return $course;
+    protected function is_complete(\stdClass $course, \stdClass $user): bool {
+        return (new \completion_info($course))->is_course_complete((int)$user->id);
     }
 
     /**
@@ -124,13 +69,15 @@ final class reconcile_task_test extends \advanced_testcase {
      * @return void
      */
     public function test_execute_exits_early_when_disabled(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
-        $course = $this->course_with_activity_criterion($user, true);
+        $cm = $this->add_activity_criterion($course);
         $this->enrol_user_direct($course, $user);
+        $this->complete_activity($course, $cm, $user, true);
 
         (new reconcile_task())->execute();
 
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
     }
 
     /**
@@ -141,14 +88,16 @@ final class reconcile_task_test extends \advanced_testcase {
     public function test_execute_books_pending_completions(): void {
         set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
 
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
-        $course = $this->course_with_activity_criterion($user, true);
+        $cm = $this->add_activity_criterion($course);
         $this->enrol_user_direct($course, $user);
+        $this->complete_activity($course, $cm, $user, true);
 
         (new reconcile_task())->execute();
         $this->resetDebugging();
 
-        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertTrue($this->is_complete($course, $user));
     }
 
     /**
@@ -159,13 +108,14 @@ final class reconcile_task_test extends \advanced_testcase {
     public function test_execute_skips_users_with_criteria_not_met(): void {
         set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
 
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
-        $course = $this->course_with_activity_criterion($user, false);
+        $this->add_activity_criterion($course);
         $this->enrol_user_direct($course, $user);
 
         (new reconcile_task())->execute();
 
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
     }
 
     /**
@@ -176,14 +126,16 @@ final class reconcile_task_test extends \advanced_testcase {
     public function test_execute_ignores_expired_enrolment(): void {
         set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
 
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
-        $course = $this->course_with_activity_criterion($user, true);
-        $this->enrol_user_direct($course, $user, time() - DAYSECS * 10, time() - DAYSECS);
+        $cm = $this->add_activity_criterion($course);
+        $this->enrol_user_direct($course, $user, time() - DAYSECS * 10, time() - DAYSECS * 10, time() - DAYSECS);
+        $this->complete_activity($course, $cm, $user, true);
 
         (new reconcile_task())->execute();
         $this->resetDebugging();
 
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
     }
 
     /**
@@ -194,14 +146,104 @@ final class reconcile_task_test extends \advanced_testcase {
     public function test_execute_ignores_future_enrolment(): void {
         set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
 
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
-        $course = $this->course_with_activity_criterion($user, true);
+        $cm = $this->add_activity_criterion($course);
         $this->enrol_user_direct($course, $user, time() + DAYSECS, 0);
+        $this->complete_activity($course, $cm, $user, true);
 
         (new reconcile_task())->execute();
         $this->resetDebugging();
 
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
+    }
+
+    /**
+     * A teacher does not hold moodle/course:isincompletionreports and is never booked.
+     *
+     * @return void
+     */
+    public function test_execute_ignores_untracked_users(): void {
+        set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $teacher = $this->getDataGenerator()->create_user();
+        $cm = $this->add_activity_criterion($course);
+        $this->enrol_user_direct($course, $teacher, 0, 0, 0, 'editingteacher');
+        $this->complete_activity($course, $cm, $teacher, true);
+
+        (new reconcile_task())->execute();
+        $this->resetDebugging();
+
+        $this->assertFalse($this->is_complete($course, $teacher));
+    }
+
+    /**
+     * A run that fills its budget resumes at the next user, not at the first one.
+     *
+     * The users this task exists for are the ones that do not complete. If progress were
+     * measured in bookings, the first budget-worth of them would be re-examined forever
+     * and the users behind them would never be reached.
+     *
+     * @return void
+     */
+    public function test_execute_advances_past_users_that_never_complete(): void {
+        set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
+        set_config('reconcilebudget', 2, 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $cm = $this->add_activity_criterion($course);
+
+        $stuck = [];
+        for ($i = 0; $i < 3; $i++) {
+            $stuck[$i] = $this->getDataGenerator()->create_user();
+            $this->enrol_user_direct($course, $stuck[$i]);
+        }
+        $lastuser = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($course, $lastuser);
+        $this->complete_activity($course, $cm, $lastuser, true);
+
+        // Two runs of two users each are enough to reach the fourth user.
+        (new reconcile_task())->execute();
+        $this->assertFalse($this->is_complete($course, $lastuser));
+
+        (new reconcile_task())->execute();
+        $this->resetDebugging();
+
+        $this->assertTrue($this->is_complete($course, $lastuser));
+        $this->assertFalse($this->is_complete($course, $stuck[0]));
+    }
+
+    /**
+     * A course that fills the budget does not block the courses behind it.
+     *
+     * @return void
+     */
+    public function test_execute_reaches_the_next_course(): void {
+        set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
+        set_config('reconcilebudget', 2, 'local_instantcoursecompletion');
+
+        $first = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $this->add_activity_criterion($first);
+        for ($i = 0; $i < 2; $i++) {
+            $this->enrol_user_direct($first, $this->getDataGenerator()->create_user());
+        }
+
+        $second = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $cm = $this->add_activity_criterion($second);
+        $user = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($second, $user);
+        $this->complete_activity($second, $cm, $user, true);
+
+        // The first run exhausts its budget inside the first course.
+        (new reconcile_task())->execute();
+        $this->assertFalse($this->is_complete($second, $user));
+
+        // The second run finds the first course empty behind the cursor and moves on.
+        (new reconcile_task())->execute();
+        $this->resetDebugging();
+
+        $this->assertTrue($this->is_complete($second, $user));
     }
 
     /**
@@ -211,10 +253,11 @@ final class reconcile_task_test extends \advanced_testcase {
      */
     public function test_execute_resets_cursor_after_full_pass(): void {
         set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
-        set_config('reconcilecursor', 12345, 'local_instantcoursecompletion');
 
         (new reconcile_task())->execute();
 
-        $this->assertSame('0', get_config('local_instantcoursecompletion', 'reconcilecursor'));
+        $cursor = json_decode(get_config('local_instantcoursecompletion', 'reconcilecursor'), true);
+        $this->assertSame(0, (int)$cursor['courseid']);
+        $this->assertSame(0, (int)$cursor['lastuserid']);
     }
 }

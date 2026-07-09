@@ -24,12 +24,18 @@
 
 namespace local_instantcoursecompletion;
 
+defined('MOODLE_INTERNAL') || die();
+
+require_once(__DIR__ . '/fixtures/completion_test_trait.php');
+
 /**
  * Completion booker tests.
  *
  * @covers \local_instantcoursecompletion\completion_booker
  */
 final class completion_booker_test extends \advanced_testcase {
+    use completion_test_trait;
+
     /**
      * Load completionlib and reset the database before each test.
      *
@@ -40,95 +46,30 @@ final class completion_booker_test extends \advanced_testcase {
         parent::setUp();
         require_once($CFG->libdir . '/completionlib.php');
         $this->resetAfterTest(true);
+        criteria_index::purge();
     }
 
     /**
-     * Create a completion-enabled course and a user.
+     * Create a completion-enabled course and an enrolled, tracked user.
      *
      * @return array Two elements: course record, user record.
      */
-    protected function course_and_user(): array {
+    protected function course_and_tracked_user(): array {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($course, $user);
         return [$course, $user];
     }
 
     /**
-     * Add an activity completion criterion backed by a manual-completion page.
+     * Whether the course is complete for the user.
      *
      * @param \stdClass $course The course.
-     * @return \stdClass The course module record.
+     * @param \stdClass $user   The user.
+     * @return bool
      */
-    protected function add_activity_criterion(\stdClass $course): \stdClass {
-        global $DB;
-
-        $page = $this->getDataGenerator()->create_module('page', [
-            'course' => $course->id,
-            'completion' => COMPLETION_TRACKING_MANUAL,
-        ]);
-        $cm = get_coursemodule_from_id('page', $page->cmid);
-
-        $DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_ACTIVITY,
-            'module' => 'page',
-            'moduleinstance' => (int)$cm->id,
-            'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
-        ]);
-
-        return $cm;
-    }
-
-
-    /**
-     * Insert an active manual enrolment without firing user_enrolment_created.
-     *
-     * @param \stdClass $course      Course record.
-     * @param \stdClass $user        User record.
-     * @param int       $timestart   Enrolment start, 0 for none.
-     * @param int       $timecreated Enrolment creation time.
-     * @return void
-     */
-    protected function enrol_user_direct(\stdClass $course, \stdClass $user, int $timestart, int $timecreated): void {
-        global $DB;
-
-        $enrolrec = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual']);
-        $enrolid = $enrolrec ? (int)$enrolrec->id : $DB->insert_record('enrol', (object)[
-            'enrol' => 'manual',
-            'courseid' => (int)$course->id,
-            'status' => 0,
-            'sortorder' => 0,
-            'timecreated' => $timecreated,
-            'timemodified' => $timecreated,
-        ]);
-
-        $DB->insert_record('user_enrolments', (object)[
-            'enrolid' => $enrolid,
-            'userid' => (int)$user->id,
-            'status' => 0,
-            'timestart' => $timestart,
-            'timeend' => 0,
-            'modifierid' => 0,
-            'timecreated' => $timecreated,
-            'timemodified' => $timecreated,
-        ]);
-    }
-
-    /**
-     * Add a duration criterion to a course.
-     *
-     * @param \stdClass $course      The course.
-     * @param int       $enrolperiod Seconds since enrolment required.
-     * @return void
-     */
-    protected function add_duration_criterion(\stdClass $course, int $enrolperiod): void {
-        global $DB;
-
-        $DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_DURATION,
-            'enrolperiod' => $enrolperiod,
-        ]);
+    protected function is_complete(\stdClass $course, \stdClass $user): bool {
+        return (new \completion_info($course))->is_course_complete((int)$user->id);
     }
 
     /**
@@ -150,6 +91,7 @@ final class completion_booker_test extends \advanced_testcase {
     public function test_book_returns_false_when_completion_disabled(): void {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 0]);
         $user = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($course, $user);
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
     }
@@ -160,7 +102,7 @@ final class completion_booker_test extends \advanced_testcase {
      * @return void
      */
     public function test_book_returns_false_without_criteria(): void {
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
     }
@@ -168,22 +110,54 @@ final class completion_booker_test extends \advanced_testcase {
     /**
      * A course that is already complete returns true without further work.
      *
+     * The tracked-user guard sits behind this check: a completion that already exists
+     * is reported regardless of the role the user holds today.
+     *
      * @return void
      */
     public function test_book_returns_true_when_already_complete(): void {
-        global $DB;
-        [$course, $user] = $this->course_and_user();
-
-        $DB->insert_record('course_completions', (object)[
-            'userid' => (int)$user->id,
-            'course' => (int)$course->id,
-            'timeenrolled' => time() - 200,
-            'timestarted' => time() - 100,
-            'timecompleted' => time() - 10,
-            'reaggregate' => 0,
-        ]);
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $this->mark_course_completed($course, $user);
 
         $this->assertTrue(completion_booker::book((int)$course->id, (int)$user->id));
+    }
+
+    /**
+     * A user without moodle/course:isincompletionreports is never booked.
+     *
+     * @return void
+     */
+    public function test_book_skips_untracked_user(): void {
+        global $DB;
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $teacher = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($course, $teacher, 0, 0, 0, 'editingteacher');
+        $cm = $this->add_activity_criterion($course);
+        $this->complete_activity($course, $cm, $teacher, true);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$teacher->id));
+        $this->assertFalse($this->is_complete($course, $teacher));
+        $this->assertFalse($DB->record_exists('course_completion_crit_compl', [
+            'course' => (int)$course->id,
+            'userid' => (int)$teacher->id,
+        ]));
+    }
+
+    /**
+     * An enrolled user with no role at all is not tracked either.
+     *
+     * @return void
+     */
+    public function test_book_skips_user_without_role(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($course, $user, 0, 0, 0, '');
+        $cm = $this->add_activity_criterion($course);
+        $this->complete_activity($course, $cm, $user, true);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
     }
 
     /**
@@ -193,16 +167,15 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_marks_criterion_completion_and_course(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
         $cm = $this->add_activity_criterion($course);
-
-        (new \completion_info($course))->update_state($cm, COMPLETION_COMPLETE, (int)$user->id);
+        $this->complete_activity($course, $cm, $user, true);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
         $this->resetDebugging();
 
         $this->assertTrue($result);
-        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertTrue($this->is_complete($course, $user));
 
         // The criterion record must exist too, or core reports would contradict the course state.
         $this->assertTrue($DB->record_exists_select(
@@ -219,11 +192,11 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_returns_false_when_criteria_not_met(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
         $this->add_activity_criterion($course);
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
         $this->assertFalse($DB->record_exists('course_completion_crit_compl', [
             'course' => (int)$course->id,
             'userid' => (int)$user->id,
@@ -238,25 +211,14 @@ final class completion_booker_test extends \advanced_testcase {
     public function test_book_records_gradefinal_for_grade_criterion(): void {
         global $CFG, $DB;
         require_once($CFG->libdir . '/gradelib.php');
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
 
         $DB->insert_record('course_completion_criteria', (object)[
             'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_GRADE,
             'gradepass' => 50.0,
         ]);
-
-        $gradeitem = new \grade_item([
-            'courseid' => (int)$course->id,
-            'itemtype' => 'manual',
-            'itemname' => 'Test manual grade item',
-            'gradetype' => GRADE_TYPE_VALUE,
-            'grademax' => 100,
-            'grademin' => 0,
-        ]);
-        $gradeitem->insert();
-        $gradeitem->update_final_grade((int)$user->id, 75.0);
-        grade_regrade_final_grades((int)$course->id);
+        $this->set_course_grade($course, $user, 75.0);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
         $this->resetDebugging();
@@ -277,14 +239,31 @@ final class completion_booker_test extends \advanced_testcase {
     public function test_book_returns_false_when_grade_criterion_not_met(): void {
         global $CFG, $DB;
         require_once($CFG->libdir . '/gradelib.php');
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
 
         $DB->insert_record('course_completion_criteria', (object)[
             'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_GRADE,
             'gradepass' => 50.0,
         ]);
+        $this->set_course_grade($course, $user, 30.0);
 
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
+    }
+
+    /**
+     * Give the user a final grade in a real manual grade item.
+     *
+     * completion_criteria_grade::review() reads the course total, which is recomputed
+     * from its sub-items on every regrade; writing that field directly is discarded.
+     *
+     * @param \stdClass $course The course.
+     * @param \stdClass $user   The user.
+     * @param float     $grade  The final grade.
+     * @return void
+     */
+    protected function set_course_grade(\stdClass $course, \stdClass $user, float $grade): void {
         $gradeitem = new \grade_item([
             'courseid' => (int)$course->id,
             'itemtype' => 'manual',
@@ -294,11 +273,9 @@ final class completion_booker_test extends \advanced_testcase {
             'grademin' => 0,
         ]);
         $gradeitem->insert();
-        $gradeitem->update_final_grade((int)$user->id, 30.0);
+        $gradeitem->update_final_grade((int)$user->id, $grade);
         grade_regrade_final_grades((int)$course->id);
-
-        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->resetDebugging();
     }
 
     /**
@@ -308,14 +285,10 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_uses_criterion_date_as_completion_time(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
 
         $timeend = mktime(0, 0, 0, 1, 1, 2020);
-        $DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
-            'timeend' => $timeend,
-        ]);
+        $this->add_date_criterion($course, $timeend);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
         $this->resetDebugging();
@@ -334,17 +307,11 @@ final class completion_booker_test extends \advanced_testcase {
      * @return void
      */
     public function test_book_returns_false_when_date_criterion_not_met(): void {
-        global $DB;
-        [$course, $user] = $this->course_and_user();
-
-        $DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
-            'timeend' => mktime(0, 0, 0, 1, 1, 2099),
-        ]);
+        [$course, $user] = $this->course_and_tracked_user();
+        $this->add_date_criterion($course, mktime(0, 0, 0, 1, 1, 2099));
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
     }
 
     /**
@@ -354,7 +321,7 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_never_marks_self_criterion(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
 
         $DB->insert_record('course_completion_criteria', (object)[
             'course' => (int)$course->id,
@@ -376,27 +343,20 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_aggregates_existing_self_criterion(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
+        [$course, $user] = $this->course_and_tracked_user();
 
-        $criterionid = $DB->insert_record('course_completion_criteria', (object)[
+        $criterionid = (int)$DB->insert_record('course_completion_criteria', (object)[
             'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_SELF,
             'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
         ]);
-
-        // Record the criterion the way core does when the user self-completes.
-        $criterioncompletion = new \completion_criteria_completion([
-            'course' => (int)$course->id,
-            'userid' => (int)$user->id,
-            'criteriaid' => (int)$criterionid,
-        ]);
-        $criterioncompletion->mark_complete();
+        $this->mark_criterion_completed($course, $user, $criterionid);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
         $this->resetDebugging();
 
         $this->assertTrue($result);
-        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertTrue($this->is_complete($course, $user));
     }
 
     /**
@@ -406,8 +366,9 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_completes_duration_criterion_from_timestart(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
 
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
         $timestart = time() - DAYSECS * 3;
         $this->add_duration_criterion($course, DAYSECS);
         $this->enrol_user_direct($course, $user, $timestart, time() - DAYSECS * 4);
@@ -433,8 +394,9 @@ final class completion_booker_test extends \advanced_testcase {
      */
     public function test_book_completes_duration_criterion_without_timestart(): void {
         global $DB;
-        [$course, $user] = $this->course_and_user();
 
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
         $timecreated = time() - DAYSECS * 3;
         $this->add_duration_criterion($course, DAYSECS);
         $this->enrol_user_direct($course, $user, 0, $timecreated);
@@ -456,25 +418,12 @@ final class completion_booker_test extends \advanced_testcase {
      * @return void
      */
     public function test_book_returns_false_when_duration_not_elapsed(): void {
-        [$course, $user] = $this->course_and_user();
-
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
         $this->add_duration_criterion($course, DAYSECS * 30);
         $this->enrol_user_direct($course, $user, time() - HOURSECS, time() - HOURSECS);
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
-        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
-    }
-
-    /**
-     * A duration criterion without any enrolment cannot be satisfied.
-     *
-     * @return void
-     */
-    public function test_book_returns_false_for_duration_without_enrolment(): void {
-        [$course, $user] = $this->course_and_user();
-
-        $this->add_duration_criterion($course, DAYSECS);
-
-        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+        $this->assertFalse($this->is_complete($course, $user));
     }
 }

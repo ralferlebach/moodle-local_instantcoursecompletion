@@ -135,6 +135,15 @@ if ($hassiteconfig) {
             0
         ));
 
+        $settings->add(new admin_setting_configtext(
+            $component . '/reconcilebudget',
+            get_string('setting:reconcilebudget', $component),
+            get_string('setting:reconcilebudget_desc', $component),
+            5000,
+            PARAM_INT
+        ));
+        $settings->hide_if($component . '/reconcilebudget', $component . '/reconcile_enabled', 'notchecked');
+
         $settings->add(new admin_setting_configcheckbox(
             $component . '/enablelogging',
             get_string('setting:enablelogging', $component),

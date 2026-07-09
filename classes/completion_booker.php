@@ -66,6 +66,12 @@ class completion_booker {
             return true;
         }
 
+        // Teachers and other roles without moodle/course:isincompletionreports never
+        // appear in a completion report and must not receive a completion record.
+        if (!$info->is_tracked_user($userid)) {
+            return false;
+        }
+
         $criteria = $info->get_criteria();
         if (empty($criteria)) {
             return false;

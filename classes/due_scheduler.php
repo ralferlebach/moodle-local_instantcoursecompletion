@@ -37,6 +37,18 @@ class due_scheduler {
     public const JITTER_WINDOW = 900;
 
     /**
+     * The capability that decides whose course progress Moodle follows.
+     *
+     * completion_info::is_tracked_user() and get_tracked_users() gate on it, so a user
+     * without it never appears in a completion report and must never be booked. Note
+     * that Moodle's own criteria cron is looser: completion_criteria_duration::cron()
+     * reads {user_enrolments} with no capability filter at all.
+     *
+     * @var string
+     */
+    public const TRACKED_CAPABILITY = 'moodle/course:isincompletionreports';
+
+    /**
      * Whether time-based criteria are planned in advance at all.
      *
      * @return bool
@@ -124,7 +136,7 @@ class due_scheduler {
         }
 
         $context = \context_course::instance($courseid, IGNORE_MISSING);
-        if (!$context || !is_enrolled($context, $userid, '', true)) {
+        if (!$context || !is_enrolled($context, $userid, self::TRACKED_CAPABILITY, true)) {
             return 0;
         }
 

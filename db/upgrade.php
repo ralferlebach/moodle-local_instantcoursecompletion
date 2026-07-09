@@ -36,5 +36,13 @@ function xmldb_local_instantcoursecompletion_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026070911, 'local', 'instantcoursecompletion');
     }
 
+    if ($oldversion < 2026070913) {
+        // The task cursors changed from a bare course ID to a composite keyset position.
+        unset_config('schedulecursor', 'local_instantcoursecompletion');
+        unset_config('reconcilecursor', 'local_instantcoursecompletion');
+
+        upgrade_plugin_savepoint(true, 2026070913, 'local', 'instantcoursecompletion');
+    }
+
     return true;
 }
