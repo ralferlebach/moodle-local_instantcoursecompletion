@@ -170,7 +170,11 @@ class observer {
     }
 
     /**
-     * Handle a completion trigger: scope check, de-duplication, then enqueue or run.
+     * Handle a completion trigger: scope check, de-duplication, then enqueue.
+     *
+     * Booking never happens in the request. Completion evaluation reads the criteria,
+     * writes completion records, dispatches course_completed and sends a notification;
+     * none of that belongs on a learner's page load.
      *
      * @param int $courseid Affected course ID.
      * @param int $userid   Affected user ID.
@@ -191,11 +195,6 @@ class observer {
                 return;
             }
             self::$seen[$key] = true;
-
-            if (get_config('local_instantcoursecompletion', 'processingmode') === 'sync') {
-                completion_booker::book($courseid, $userid);
-                return;
-            }
 
             // Booking is a system operation; the affected user travels in the custom data.
             $task = new book_completion_task();

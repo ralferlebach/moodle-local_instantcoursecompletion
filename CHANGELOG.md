@@ -8,6 +8,50 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-09
+
+Entfernt den Synchron-Modus und schliesst die letzte Testlücke im `adele`-Pfad.
+Maturity bleibt `BETA` bis zur Freigabe für 1.0.
+
+### Removed
+
+- **Synchroner Verarbeitungsmodus.** Der Observer reiht ausnahmslos einen Ad-hoc-Task
+  ein. Der Modus zog eine vollständige Completion-Auswertung samt `mark_complete()`,
+  `course_completed`-Dispatch und `message_send()` in den Webrequest einer lernenden
+  Person. Seit der Observer-Verengung in 0.4.1 feuert der Auslöser ohnehin deutlich
+  seltener, und der Ad-hoc-Task läuft beim nächsten Cron-Tick — der Latenzvorteil trug
+  die zusätzliche Einstellung, den Testpfad und das Lastrisiko nicht mehr.
+- Einstellung `processingmode` samt der Sprachstrings `setting:processingmode`,
+  `setting:processingmode_desc`, `processingmode:async` und `processingmode:sync`.
+- `observer_test::test_sync_mode_does_not_queue()`.
+
+### Added
+
+- **`db/upgrade.php`**: entfernt beim Upgrade den verwaisten Konfigurationswert
+  `processingmode` per `unset_config()`.
+- **`scope_resolver_test::test_scope_adele_uses_adele_configuration()`**: prüft, dass
+  im `adele`-Modus tatsächlich `catfilter`, `includetags` und `excludetags` aus
+  `local_adele` gelesen werden und nicht die eigenen Einstellungen. Übersprungen, wenn
+  `local_adele` fehlt.
+- **`scope_resolver_test::test_scope_adele_mode_is_reported()`**: läuft in jeder
+  Umgebung.
+
+### Changed
+
+- **Der `adele`-Skip ist jetzt symmetrisch.** Bisher war nur der Pfad „Plugin fehlt"
+  abgedeckt; er wird lokal übersprungen (dort ist `local_adele` installiert), während
+  der Delegationspfad in der CI nie laufen konnte, weil dort keine Fremdplugins
+  installiert werden. Beide Pfade sind nun je einmal abgedeckt, und jede Umgebung
+  überspringt genau einen Test — mit einer Begründung im Skip-Text.
+- README: Einstellungstabelle und Architekturbeschreibung ohne Synchron-Modus.
+- Behat: Assertion auf „Processing mode" entfernt.
+
+### Offen
+
+- Freigabe für `MATURITY_STABLE` / 1.0.0 steht aus.
+- Ereignisgesteuerte Sofortplanung bei Einschreibung oder Kriterienänderung; die
+  Discovery wäre danach reiner Recovery-Mechanismus.
+
 ## [0.4.4] - 2026-07-09
 
 Release-Vorbereitung. Der Audit-Stack aus 0.4.0–0.4.3 ist abgearbeitet, lokal und in

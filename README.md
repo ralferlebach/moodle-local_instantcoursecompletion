@@ -29,8 +29,9 @@ completion, `completion_info::internal_set_data()` runs both stages inline befor
 fires `course_module_completion_updated`. Everything else waits for cron.
 
 This plugin runs the same two stages, for the same criteria, at the moment they can
-first succeed. It never writes a `course_completions` row directly and never
-implements its own aggregation.
+first succeed. It never writes a `course_completions` row directly, never implements
+its own aggregation, and never evaluates completion inside a web request — the
+observers only queue a deduplicated ad-hoc task.
 
 ### Where the latency actually is
 
@@ -124,7 +125,6 @@ the number of courses on the site.
 | Observer scope | All courses | See above. |
 | Category branches | — | Only used in the categories scope. |
 | Included / excluded course tags | — | One per line or comma separated. Matched against Moodle's normalised tag names. |
-| Processing mode | Asynchronous | Synchronous books inside the web request; use it only for small scopes. |
 | Plan time-based criteria in advance | On | Enables the discovery task. |
 | Scheduling horizon | 7 days | Must exceed the discovery interval (hourly). |
 | Maximum bookings planned per run | 5000 | Upper bound on ad-hoc tasks queued per run. |

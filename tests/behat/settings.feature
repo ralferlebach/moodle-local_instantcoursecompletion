@@ -12,7 +12,6 @@ Feature: Configure the instant course completion plugin
     Then I should see "Observer scope"
     And the "Observer scope" select box should contain "All courses on this site"
     And the "Observer scope" select box should contain "Selected category branches"
-    And I should see "Processing mode"
     And I should see "Plan time-based criteria in advance"
     And I should see "Scheduling horizon"
     And I should see "Enable safety-net reconcile task"

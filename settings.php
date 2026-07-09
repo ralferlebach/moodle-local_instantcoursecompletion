@@ -104,17 +104,6 @@ if ($hassiteconfig) {
         $settings->add($setting);
         $settings->hide_if($component . '/excludetags', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
 
-        $settings->add(new admin_setting_configselect(
-            $component . '/processingmode',
-            get_string('setting:processingmode', $component),
-            get_string('setting:processingmode_desc', $component),
-            'async',
-            [
-                'async' => get_string('processingmode:async', $component),
-                'sync' => get_string('processingmode:sync', $component),
-            ]
-        ));
-
         $settings->add(new admin_setting_configcheckbox(
             $component . '/schedulingenabled',
             get_string('setting:schedulingenabled', $component),

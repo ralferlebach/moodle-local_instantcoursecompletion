@@ -316,20 +316,68 @@ final class scope_resolver_test extends \advanced_testcase {
     }
 
     /**
+     * The configured mode is reported as-is, whether or not local_adele is present.
+     *
+     * @return void
+     */
+    public function test_scope_adele_mode_is_reported(): void {
+        set_config('scopemode', scope_resolver::SCOPE_ADELE, 'local_instantcoursecompletion');
+
+        $this->assertSame(scope_resolver::SCOPE_ADELE, scope_resolver::get_mode());
+    }
+
+    /**
      * A configured adele scope yields an empty scope when local_adele is absent.
+     *
+     * Widening it to every course would silently exceed what the administrator asked
+     * for. This is the counterpart of test_scope_adele_uses_adele_configuration(), and
+     * exactly one of the two runs in any given environment.
      *
      * @return void
      */
     public function test_scope_adele_is_empty_without_plugin(): void {
         if (scope_resolver::adele_available()) {
-            $this->markTestSkipped('local_adele is installed in this environment.');
+            $this->markTestSkipped('local_adele is installed; the absent-plugin path cannot be exercised.');
         }
 
         $course = $this->getDataGenerator()->create_course();
         set_config('scopemode', scope_resolver::SCOPE_ADELE, 'local_instantcoursecompletion');
         scope_resolver::purge_cache();
 
-        $this->assertSame(scope_resolver::SCOPE_ADELE, scope_resolver::get_mode());
         $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+    }
+
+    /**
+     * With local_adele present, the scope is read from that plugin's configuration.
+     *
+     * The counterpart of test_scope_adele_is_empty_without_plugin(). Without this test
+     * the delegation would be covered nowhere: continuous integration runs without
+     * third-party plugins, so the absent-plugin test is the only one that can run there.
+     *
+     * @return void
+     */
+    public function test_scope_adele_uses_adele_configuration(): void {
+        if (!scope_resolver::adele_available()) {
+            $this->markTestSkipped('local_adele is not installed; the delegation path cannot be exercised.');
+        }
+
+        $incat = $this->getDataGenerator()->create_category();
+        $outcat = $this->getDataGenerator()->create_category();
+        $inscope = $this->getDataGenerator()->create_course(['category' => $incat->id]);
+        $outofscope = $this->getDataGenerator()->create_course(['category' => $outcat->id]);
+
+        set_config('scopemode', scope_resolver::SCOPE_ADELE, 'local_instantcoursecompletion');
+        set_config('catfilter', (string)$incat->id, 'local_adele');
+        set_config('includetags', '', 'local_adele');
+        set_config('excludetags', '', 'local_adele');
+        scope_resolver::purge_cache();
+
+        $this->assertTrue(scope_resolver::is_in_scope((int)$inscope->id));
+        $this->assertFalse(scope_resolver::is_in_scope((int)$outofscope->id));
+
+        // The plugin reads catfilter, not its own categories setting.
+        set_config('categories', (string)$outcat->id, 'local_instantcoursecompletion');
+        scope_resolver::purge_cache();
+        $this->assertFalse(scope_resolver::is_in_scope((int)$outofscope->id));
     }
 }

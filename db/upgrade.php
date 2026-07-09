@@ -15,7 +15,7 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Plugin version definition for local_instantcoursecompletion.
+ * Upgrade steps for local_instantcoursecompletion.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -24,10 +24,19 @@
 
 defined('MOODLE_INTERNAL') || die();
 
-$plugin->component = 'local_instantcoursecompletion';
-$plugin->version = 2026070911;
-$plugin->requires = 2024100700;
-$plugin->supported = [405, 502];
-$plugin->maturity = MATURITY_BETA;
-$plugin->release = '0.4.5';
-$plugin->dependencies = [];
+/**
+ * Apply the upgrade steps between two plugin versions.
+ *
+ * @param int $oldversion The version the site is upgrading from.
+ * @return bool
+ */
+function xmldb_local_instantcoursecompletion_upgrade($oldversion) {
+    if ($oldversion < 2026070911) {
+        // The synchronous processing mode was removed; drop its orphaned setting.
+        unset_config('processingmode', 'local_instantcoursecompletion');
+
+        upgrade_plugin_savepoint(true, 2026070911, 'local', 'instantcoursecompletion');
+    }
+
+    return true;
+}

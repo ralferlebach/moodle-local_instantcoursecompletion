@@ -33,7 +33,7 @@ use local_instantcoursecompletion\task\book_completion_task;
  */
 final class observer_test extends \advanced_testcase {
     /**
-     * Load completionlib, reset state and select the asynchronous path.
+     * Load completionlib and reset state.
      *
      * The plugin registers its observers with internal = false, so core defers them
      * until the surrounding database transaction commits. On PostgreSQL and MSSQL,
@@ -52,7 +52,6 @@ final class observer_test extends \advanced_testcase {
         observer::reset_seen();
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
-        set_config('processingmode', 'async', 'local_instantcoursecompletion');
     }
 
     /**
@@ -237,22 +236,6 @@ final class observer_test extends \advanced_testcase {
         ]);
         $completion->mark_complete();
         $this->resetDebugging();
-
-        $this->assertCount(0, $this->queued_tasks());
-    }
-
-    /**
-     * The synchronous mode books in the request instead of queueing.
-     *
-     * @return void
-     */
-    public function test_sync_mode_does_not_queue(): void {
-        set_config('processingmode', 'sync', 'local_instantcoursecompletion');
-
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        observer::handle_completion_trigger((int)$course->id, (int)$user->id);
 
         $this->assertCount(0, $this->queued_tasks());
     }
