@@ -8,6 +8,66 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-09
+
+Der Scope-Cache skaliert nicht mehr mit der Kursanzahl. Zusätzlich der Fix für die
+unter PostgreSQL fehlschlagenden Observer-Tests.
+
+### Changed — Scope-Cache
+
+- **`scope_resolver::get_scope_course_ids()` entfällt.** Bisher wurde die vollständige
+  Menge aller Kurs-IDs im Wirkungsbereich materialisiert und als *ein* Cache-Wert
+  abgelegt — mit `staticacceleration` in jedem Request im PHP-Heap, bei jeder
+  Invalidierung komplett neu aufgebaut, und bei grossen Instanzen als
+  Megabyte-Wert in Redis/Memcached. Die Kardinalität lag an der falschen Achse.
+- **Neue Struktur, zwei Caches:**
+  - `scopecategoryids` — die ausgewählten Kurszweige inklusive Unterkategorien,
+    gekeyt über einen Hash der Auswahl. Gross ist hier die Kategorienzahl, nicht die
+    Kursanzahl.
+  - `scopecoursemembership` — pro Kurs ein `0`/`1`, lazy befüllt, gekeyt über
+    Konfigurations-Hash plus Kurs-ID. Der Wert wird als Integer gespeichert, weil ein
+    Cache-Miss ebenfalls `false` liefert und ein gecachtes „nicht im Scope" davon
+    unterscheidbar bleiben muss.
+- **`is_in_scope()`** liest die Kategorie des Kurses über `get_course()` aus dem
+  Core-Kurs-Cache und prüft sie gegen das Kategorien-Set; Tag-Filter werden nur dann
+  ausgewertet, wenn sie konfiguriert sind, über `core_tag_tag::get_item_tags_array()`.
+- **`reconcile_task::eligible_course_ids()`** filtert jetzt über `is_in_scope()` je Kurs
+  statt über die materialisierte Menge.
+- **Invalidierung:**
+  - `course_created` ist kein Invalidierungs-Event mehr — für einen neuen Kurs kann
+    nichts gecacht sein.
+  - `course_updated` und `course_deleted` verwerfen nur den Eintrag *dieses* Kurses
+    (`observer::invalidate_course_scope()`); ein Kurs kann den Wirkungsbereich durch
+    einen Kategorienwechsel verlassen.
+  - Kategorie- und Tag-Events verwerfen beide Caches.
+  - Eine Änderung der Einstellungen ändert den Konfigurations-Hash und damit den
+    Schlüssel; veraltete Antworten sind nicht mehr erreichbar.
+
+### Fixed — PHPUnit unter PostgreSQL
+
+- **`observer_test` schlug unter pgsql fehl, unter MariaDB nicht.**
+  `advanced_testcase::runBare()` öffnet ausschliesslich für `postgres` und `mssql` eine
+  Test-Transaktion (`// Database must allow rollback of DDL, so no mysql here.`).
+  `\core\event\manager::process_buffers()` stellt Observer mit `'internal' => false`
+  bei offener Transaktion in `$extbuffer` zurück; der Rollback am Testende verwirft sie.
+  Die Observer liefen daher unter pgsql nie. Behoben durch `preventResetByRollback()`
+  in `observer_test::setUp()`.
+  `test_activity_completion_skipped_when_only_activity_criteria` war unter pgsql
+  zuvor **falsch grün** — der Test hätte auch ohne die Verengung bestanden.
+  Kein Produktivcode betroffen; `internal => false` bleibt korrekt.
+
+### Added — Tests
+
+- `scope_resolver`: negatives Ergebnis wird gecacht und nicht mit einem Miss
+  verwechselt; `purge_course()` frischt nur einen Kurs auf; `purge_cache()` frischt
+  alles auf; Konfigurationswechsel wechselt den Schlüssel; Exclude-Tag schlägt
+  Include-Tag; unbekannte Kurs-ID wirft nicht.
+
+### Offen (unverändert)
+
+- Entfernung des Synchron-Modus.
+- Fälligkeitsbasierte Ad-hoc-Task-Architektur für Datums- und Dauer-Kriterien.
+
 ## [0.4.1] - 2026-07-09
 
 Verengt die Observer auf die Fälle, die Moodle Core nicht selbst erledigt, schließt

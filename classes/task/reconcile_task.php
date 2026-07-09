@@ -129,8 +129,8 @@ class reconcile_task extends \core\task\scheduled_task {
     /**
      * Return the next slice of courses that have completion criteria configured.
      *
-     * The scope filter is applied in PHP rather than as an IN clause, so the query
-     * never carries an unbounded parameter list.
+     * The scope filter is applied per course in PHP rather than as an IN clause, so the
+     * query never carries an unbounded parameter list.
      *
      * @param int $cursor Only courses with a higher ID are returned.
      * @return int[] Ordered course IDs, at most MAX_COURSES_PER_RUN of them.
@@ -153,10 +153,9 @@ class reconcile_task extends \core\task\scheduled_task {
             return array_map('intval', $courseids);
         }
 
-        $scope = scope_resolver::get_scope_course_ids();
         return array_values(array_filter(
             array_map('intval', $courseids),
-            static fn($courseid) => isset($scope[$courseid])
+            static fn($courseid) => scope_resolver::is_in_scope($courseid)
         ));
     }
 

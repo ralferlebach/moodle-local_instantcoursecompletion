@@ -21,6 +21,9 @@
  * completion triggers write completion records and queue tasks, and the cache
  * invalidators must not discard state that a rolled-back change would restore.
  *
+ * A newly created course needs no invalidation, because scope membership is only
+ * ever cached for courses that have already been asked about.
+ *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -60,18 +63,13 @@ $observers = [
         'internal' => false,
     ],
     [
-        'eventname' => '\core\event\course_created',
-        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
-        'internal' => false,
-    ],
-    [
         'eventname' => '\core\event\course_updated',
-        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_course_scope',
         'internal' => false,
     ],
     [
         'eventname' => '\core\event\course_deleted',
-        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_course_scope',
         'internal' => false,
     ],
     [

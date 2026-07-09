@@ -88,7 +88,7 @@ class observer {
     }
 
     /**
-     * Purge the resolved-scope cache after a structural change.
+     * Purge both scope caches after a category tree or tag change.
      *
      * @param \core\event\base $event The triggering event.
      * @return void
@@ -96,7 +96,7 @@ class observer {
     public static function invalidate_scope_cache(base $event): void {
         try {
             if (scope_resolver::get_mode() === scope_resolver::SCOPE_ALL) {
-                // No scope set is cached in this mode.
+                // Nothing is cached in this mode.
                 return;
             }
             if (!self::event_affects_scope($event)) {
@@ -106,6 +106,26 @@ class observer {
         } catch (\Throwable $e) {
             debugging(
                 'local_instantcoursecompletion: scope cache purge failed: ' . $e->getMessage(),
+                DEBUG_DEVELOPER
+            );
+        }
+    }
+
+    /**
+     * Drop the cached scope membership of one course after it changed.
+     *
+     * A course can leave or enter the scope by moving to another category; its tags
+     * are handled by the tag events, which purge the whole membership cache.
+     *
+     * @param \core\event\base $event The triggering event.
+     * @return void
+     */
+    public static function invalidate_course_scope(base $event): void {
+        try {
+            scope_resolver::purge_course((int)$event->courseid);
+        } catch (\Throwable $e) {
+            debugging(
+                'local_instantcoursecompletion: course scope purge failed: ' . $e->getMessage(),
                 DEBUG_DEVELOPER
             );
         }

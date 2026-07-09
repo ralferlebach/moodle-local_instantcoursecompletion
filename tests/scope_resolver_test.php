@@ -43,7 +43,7 @@ final class scope_resolver_test extends \advanced_testcase {
     /**
      * Configure the categories scope and drop the cached resolution.
      *
-     * @param string $categories Comma-separated category IDs.
+     * @param string $categories  Comma-separated category IDs.
      * @param string $includetags Include tag list.
      * @param string $excludetags Exclude tag list.
      * @return void
@@ -142,6 +142,18 @@ final class scope_resolver_test extends \advanced_testcase {
     }
 
     /**
+     * A deleted course is never in scope, and asking does not raise.
+     *
+     * @return void
+     */
+    public function test_scope_categories_unknown_course_is_out(): void {
+        $cat = $this->getDataGenerator()->create_category();
+        $this->configure_categories_scope((string)$cat->id);
+
+        $this->assertFalse(scope_resolver::is_in_scope(999999));
+    }
+
+    /**
      * Include and exclude tag filters restrict the category branch further.
      *
      * @return void
@@ -155,6 +167,21 @@ final class scope_resolver_test extends \advanced_testcase {
         $this->assertTrue(scope_resolver::is_in_scope((int)$course->id));
 
         $this->configure_categories_scope((string)$cat->id, '', 'keep');
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+    }
+
+    /**
+     * An excluded tag beats an included one.
+     *
+     * @return void
+     */
+    public function test_scope_categories_exclude_wins_over_include(): void {
+        $cat = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $cat->id]);
+        $this->tag_course($course, ['keep', 'drop']);
+
+        $this->configure_categories_scope((string)$cat->id, 'keep', 'drop');
+
         $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
     }
 
@@ -200,6 +227,92 @@ final class scope_resolver_test extends \advanced_testcase {
 
         $this->configure_categories_scope((string)$cat->id, 'doesnotexist', '');
         $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+    }
+
+    /**
+     * A negative membership is cached rather than re-evaluated on every call.
+     *
+     * A cache miss also yields false, so the stored value has to be distinguishable
+     * from one: moving the course in the database must not change the cached answer.
+     *
+     * @return void
+     */
+    public function test_membership_cache_stores_negative_answers(): void {
+        global $DB;
+
+        $incat = $this->getDataGenerator()->create_category();
+        $outcat = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $outcat->id]);
+
+        $this->configure_categories_scope((string)$incat->id);
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+
+        $DB->set_field('course', 'category', (int)$incat->id, ['id' => (int)$course->id]);
+
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+    }
+
+    /**
+     * A full purge refreshes every cached membership.
+     *
+     * @return void
+     */
+    public function test_purge_cache_refreshes_membership(): void {
+        global $DB;
+
+        $incat = $this->getDataGenerator()->create_category();
+        $outcat = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $outcat->id]);
+
+        $this->configure_categories_scope((string)$incat->id);
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+
+        $DB->set_field('course', 'category', (int)$incat->id, ['id' => (int)$course->id]);
+        scope_resolver::purge_cache();
+
+        $this->assertTrue(scope_resolver::is_in_scope((int)$course->id));
+    }
+
+    /**
+     * Purging one course drops only that course's cached membership.
+     *
+     * @return void
+     */
+    public function test_purge_course_refreshes_membership(): void {
+        global $DB;
+
+        $incat = $this->getDataGenerator()->create_category();
+        $outcat = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $outcat->id]);
+
+        $this->configure_categories_scope((string)$incat->id);
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+
+        // Move the course into the scoped category behind the resolver's back.
+        $DB->set_field('course', 'category', (int)$incat->id, ['id' => (int)$course->id]);
+
+        // Still the cached answer.
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+
+        scope_resolver::purge_course((int)$course->id);
+        $this->assertTrue(scope_resolver::is_in_scope((int)$course->id));
+    }
+
+    /**
+     * Changing the configuration changes the cache key, so stale answers cannot leak.
+     *
+     * @return void
+     */
+    public function test_configuration_change_invalidates_membership(): void {
+        $cat1 = $this->getDataGenerator()->create_category();
+        $cat2 = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $cat2->id]);
+
+        $this->configure_categories_scope((string)$cat1->id);
+        $this->assertFalse(scope_resolver::is_in_scope((int)$course->id));
+
+        $this->configure_categories_scope((string)$cat2->id);
+        $this->assertTrue(scope_resolver::is_in_scope((int)$course->id));
     }
 
     /**

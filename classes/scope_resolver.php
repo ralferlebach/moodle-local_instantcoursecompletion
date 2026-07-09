@@ -69,6 +69,10 @@ class scope_resolver {
     /**
      * Is the given course within the configured observer scope?
      *
+     * The answer is cached per course rather than derived from a materialised list of
+     * every in-scope course, so the cached payload stays proportional to the courses
+     * actually touched instead of to the size of the site.
+     *
      * @param int $courseid Course ID to test.
      * @return bool
      */
@@ -76,49 +80,161 @@ class scope_resolver {
         if ($courseid <= 0 || $courseid == SITEID) {
             return false;
         }
-        if (self::get_mode() === self::SCOPE_ALL) {
-            return true;
-        }
-        return isset(self::get_scope_course_ids()[$courseid]);
-    }
 
-    /**
-     * Return the resolved set of in-scope course IDs as a map of id to true.
-     *
-     * Empty for SCOPE_ALL; callers use is_in_scope(), which short-circuits that mode.
-     *
-     * @return array<int, bool>
-     */
-    public static function get_scope_course_ids(): array {
         $mode = self::get_mode();
         if ($mode === self::SCOPE_ALL) {
-            return [];
+            return true;
         }
         if ($mode === self::SCOPE_ADELE && !self::adele_available()) {
-            return [];
+            return false;
         }
 
         $filter = self::filter_definition($mode);
-        $cache = \cache::make(self::COMPONENT, 'scopecourseids');
-        $key = sha1(serialize([$mode, $filter]));
+        $cache = \cache::make(self::COMPONENT, 'scopecoursemembership');
+        $key = self::filter_hash($mode, $filter) . '_' . $courseid;
+
+        // Membership is stored as 0 or 1 so that a cached "not in scope" is
+        // distinguishable from a cache miss, which also yields false.
+        $cached = $cache->get($key);
+        if ($cached !== false) {
+            return (bool)$cached;
+        }
+
+        $inscope = self::evaluate_membership($courseid, $filter);
+        $cache->set($key, $inscope ? 1 : 0);
+        return $inscope;
+    }
+
+    /**
+     * Purge both scope caches.
+     *
+     * @return void
+     */
+    public static function purge_cache(): void {
+        \cache::make(self::COMPONENT, 'scopecategoryids')->purge();
+        \cache::make(self::COMPONENT, 'scopecoursemembership')->purge();
+    }
+
+    /**
+     * Purge the cached membership of a single course.
+     *
+     * @param int $courseid Course ID.
+     * @return void
+     */
+    public static function purge_course(int $courseid): void {
+        if ($courseid <= 0) {
+            return;
+        }
+
+        $mode = self::get_mode();
+        if ($mode === self::SCOPE_ALL) {
+            return;
+        }
+
+        $key = self::filter_hash($mode, self::filter_definition($mode)) . '_' . $courseid;
+        \cache::make(self::COMPONENT, 'scopecoursemembership')->delete($key);
+    }
+
+    /**
+     * Cache key prefix identifying the current scope configuration.
+     *
+     * @param string $mode   Effective scope mode.
+     * @param array  $filter Filter definition.
+     * @return string A hexadecimal hash, safe for a simplekeys cache.
+     */
+    protected static function filter_hash(string $mode, array $filter): string {
+        return sha1(serialize([$mode, $filter]));
+    }
+
+    /**
+     * Decide membership for one course against the filter definition.
+     *
+     * @param int   $courseid Course ID.
+     * @param array $filter   Filter definition.
+     * @return bool
+     */
+    protected static function evaluate_membership(int $courseid, array $filter): bool {
+        [$categoryids, $includetags, $excludetags] = $filter;
+
+        $categoryset = self::scope_category_ids($categoryids);
+        if (empty($categoryset)) {
+            return false;
+        }
+
+        try {
+            $course = get_course($courseid);
+        } catch (\dml_exception $e) {
+            return false;
+        }
+
+        if (!isset($categoryset[(int)$course->category])) {
+            return false;
+        }
+
+        return self::course_matches_tags($courseid, $includetags, $excludetags);
+    }
+
+    /**
+     * Does the course satisfy the include and exclude tag filters?
+     *
+     * @param int      $courseid    Course ID.
+     * @param string[] $includetags Course must carry at least one of these tags, if any.
+     * @param string[] $excludetags Course must carry none of these tags.
+     * @return bool
+     */
+    protected static function course_matches_tags(int $courseid, array $includetags, array $excludetags): bool {
+        if (empty($includetags) && empty($excludetags)) {
+            return true;
+        }
+
+        $includeids = self::resolve_tag_ids($includetags);
+        if (!empty($includetags) && empty($includeids)) {
+            // The filter names only tags that do not exist, so nothing can match it.
+            return false;
+        }
+
+        $coursetagids = array_map('intval', array_keys(
+            \core_tag_tag::get_item_tags_array('core', 'course', $courseid, \core_tag_tag::BOTH_STANDARD_AND_NOT, 0, false)
+        ));
+
+        $excludeids = self::resolve_tag_ids($excludetags);
+        if (!empty($excludeids) && array_intersect($coursetagids, $excludeids)) {
+            return false;
+        }
+        if (!empty($includeids) && !array_intersect($coursetagids, $includeids)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * The selected categories together with all of their sub-categories.
+     *
+     * The result is cached: it is bounded by the number of categories on the site,
+     * not by the number of courses, and changes only when the category tree does.
+     *
+     * @param int[] $categoryids Selected category IDs.
+     * @return array<int, bool> Map of category ID to true.
+     */
+    protected static function scope_category_ids(array $categoryids): array {
+        $categoryids = array_values(array_unique(array_filter(array_map('intval', $categoryids))));
+        if (empty($categoryids)) {
+            return [];
+        }
+        sort($categoryids);
+
+        $cache = \cache::make(self::COMPONENT, 'scopecategoryids');
+        $key = sha1(serialize($categoryids));
 
         $cached = $cache->get($key);
         if ($cached !== false) {
             return $cached;
         }
 
-        $set = self::build_course_id_set($filter[0], $filter[1], $filter[2]);
+        $set = array_fill_keys(self::resolve_category_subtree($categoryids), true);
         $cache->set($key, $set);
         return $set;
-    }
-
-    /**
-     * Purge the resolved-scope cache.
-     *
-     * @return void
-     */
-    public static function purge_cache(): void {
-        \cache::make(self::COMPONENT, 'scopecourseids')->purge();
     }
 
     /**
@@ -139,53 +255,6 @@ class scope_resolver {
     }
 
     /**
-     * Build the set of in-scope course IDs for the given filter definition.
-     *
-     * @param int[]    $categoryids Selected category IDs; sub-categories are resolved here.
-     * @param string[] $includetags Course must carry at least one of these tags, if any.
-     * @param string[] $excludetags Course must carry none of these tags.
-     * @return array<int, bool> Map of course ID to true.
-     */
-    protected static function build_course_id_set(array $categoryids, array $includetags, array $excludetags): array {
-        global $DB;
-
-        $catids = self::resolve_category_subtree($categoryids);
-        if (empty($catids)) {
-            return [];
-        }
-
-        $includeids = self::resolve_tag_ids($includetags);
-        if (!empty($includetags) && empty($includeids)) {
-            // The filter names only tags that do not exist, so nothing can match it.
-            return [];
-        }
-        $excludeids = self::resolve_tag_ids($excludetags);
-
-        [$catinsql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED, 'cat');
-        $params['siteid'] = SITEID;
-        $where = ['c.id <> :siteid', "c.category $catinsql"];
-
-        if (!empty($includeids)) {
-            [$insql, $inparams] = $DB->get_in_or_equal($includeids, SQL_PARAMS_NAMED, 'itag');
-            $where[] = "EXISTS (SELECT 1 FROM {tag_instance} ti
-                                 WHERE ti.component = 'core' AND ti.itemtype = 'course'
-                                   AND ti.itemid = c.id AND ti.tagid $insql)";
-            $params += $inparams;
-        }
-
-        if (!empty($excludeids)) {
-            [$exsql, $exparams] = $DB->get_in_or_equal($excludeids, SQL_PARAMS_NAMED, 'xtag');
-            $where[] = "NOT EXISTS (SELECT 1 FROM {tag_instance} tx
-                                     WHERE tx.component = 'core' AND tx.itemtype = 'course'
-                                       AND tx.itemid = c.id AND tx.tagid $exsql)";
-            $params += $exparams;
-        }
-
-        $sql = 'SELECT c.id FROM {course} c WHERE ' . implode(' AND ', $where);
-        return array_fill_keys(array_map('intval', $DB->get_fieldset_sql($sql, $params)), true);
-    }
-
-    /**
      * Expand the selected categories to include all of their sub-categories.
      *
      * Descendants are matched by a prefix comparison against the selected category's
@@ -196,11 +265,6 @@ class scope_resolver {
      */
     protected static function resolve_category_subtree(array $categoryids): array {
         global $DB;
-
-        $categoryids = array_values(array_unique(array_filter(array_map('intval', $categoryids))));
-        if (empty($categoryids)) {
-            return [];
-        }
 
         [$insql, $params] = $DB->get_in_or_equal($categoryids, SQL_PARAMS_NAMED, 'cid');
         $paths = $DB->get_records_select_menu('course_categories', "id $insql", $params, '', 'id, path');

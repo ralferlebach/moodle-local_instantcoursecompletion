@@ -35,6 +35,12 @@ final class observer_test extends \advanced_testcase {
     /**
      * Load completionlib, reset state and select the asynchronous path.
      *
+     * The plugin registers its observers with internal = false, so core defers them
+     * until the surrounding database transaction commits. On PostgreSQL and MSSQL,
+     * advanced_testcase wraps every test in a transaction it rolls back afterwards,
+     * which would discard the deferred observers and let event-driven assertions pass
+     * or fail for the wrong reason.
+     *
      * @return void
      */
     protected function setUp(): void {
@@ -42,6 +48,7 @@ final class observer_test extends \advanced_testcase {
         parent::setUp();
         require_once($CFG->libdir . '/completionlib.php');
         $this->resetAfterTest(true);
+        $this->preventResetByRollback();
         observer::reset_seen();
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');

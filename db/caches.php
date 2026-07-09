@@ -26,13 +26,24 @@ defined('MOODLE_INTERNAL') || die();
 
 $definitions = [
 
-    // Resolved set of in-scope course IDs, keyed by a hash of the scope configuration.
-    'scopecourseids' => [
+    // The selected category branches expanded to include every sub-category, keyed by a
+    // hash of the selection. Bounded by the number of categories on the site.
+    'scopecategoryids' => [
         'mode' => cache_store::MODE_APPLICATION,
         'simplekeys' => true,
         'simpledata' => true,
         'staticacceleration' => true,
         'staticaccelerationsize' => 2,
+    ],
+
+    // Whether a course is in scope, stored as 0 or 1 and filled lazily per course.
+    // Keyed by the scope configuration hash and the course ID.
+    'scopecoursemembership' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
+        'staticacceleration' => true,
+        'staticaccelerationsize' => 50,
     ],
 
     // Criterion types configured per course, keyed by course ID. Read on the request

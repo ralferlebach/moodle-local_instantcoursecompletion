@@ -25,7 +25,8 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['cachedef_coursecriteriatypes'] = 'Completion criterion types configured per course';
-$string['cachedef_scopecourseids'] = 'Resolved set of in-scope course IDs';
+$string['cachedef_scopecategoryids'] = 'Selected category branches expanded to include sub-categories';
+$string['cachedef_scopecoursemembership'] = 'Whether a course is within the observer scope';
 $string['event:completion_booked'] = 'Course completion booked (instant)';
 $string['pluginname'] = 'Instant course completion';
 $string['privacy:metadata:log'] = 'The Instant course completion plugin emits a completion_booked event when it books a course completion and logging is enabled. The event records the course, the affected user and the time, and is stored by the logging subsystem.';
