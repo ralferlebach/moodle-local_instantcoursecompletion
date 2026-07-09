@@ -8,6 +8,61 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-09
+
+Verengt die Observer auf die Fälle, die Moodle Core nicht selbst erledigt, schließt
+die Lücke bei Voraussetzungskursen und behebt den Duration-Fehlschlag.
+
+### Added
+
+- **`criteria_index`** (neu): gecachte Abfrage, welche Kriterientypen ein Kurs
+  konfiguriert hat. MUC-Application-Cache `coursecriteriatypes`, Schlüssel = Kurs-ID,
+  TTL 3600 s, invalidiert durch `course_completion_updated`, `course_deleted` und
+  `course_reset_ended`. Ein Restore löst keines dieser Events aus — dafür die TTL.
+- **Observer auf `\core\event\course_completed`**: schließt ein Kurs ab, werden alle
+  Kurse mit einem Voraussetzungs-Kriterium (`COMPLETION_CRITERIA_TYPE_COURSE`) auf
+  diesen Kurs neu bewertet. Core wertet Voraussetzungs-Kriterien ausschließlich im
+  Cron aus; das war die grösste verbleibende Latenzquelle.
+- Fehlende Sprachstrings `cachedef_scopecourseids` und `cachedef_coursecriteriatypes`.
+
+### Changed
+
+- **`course_module_completion_updated`** wird übersprungen, wenn der Kurs
+  ausschliesslich Aktivitäts-Kriterien besitzt. `completion_info::internal_set_data()`
+  ruft für Einzelaktionen bereits `mark_course_completions_activity_criteria()` und
+  `aggregate_completions()` auf, bevor das Event feuert; der Ad-hoc-Task wäre in
+  diesem Fall immer mit `already-complete` oder `criteria-not-met` geendet.
+- **`user_graded`** wird übersprungen, wenn der Kurs kein Noten-Kriterium besitzt.
+  Bisher erzeugte jede Gradebook-Änderung im Wirkungsbereich einen Ad-hoc-Task,
+  auch bei Massen-Neuberechnungen.
+
+### Fixed
+
+- **Duration-Kriterien ohne Einschreibe-Startdatum.**
+  `completion_criteria_duration::review()` liest ausschliesslich `ue.timestart` und
+  liefert bei `timestart = 0` konstant `false`; `completion_criteria_duration::cron()`
+  weicht in diesem Fall auf `ue.timecreated` aus. `completion_booker` bildet jetzt die
+  Cron-Regel nach (früheste Einschreibung, `timestart` sonst `timecreated`) und
+  verbucht den Kriteriums-Datensatz mit `timeenrolled + enrolperiod` statt `time()`.
+  Diese Abweichung ist ein Core-Defekt und sollte zusätzlich an Moodle gemeldet werden.
+
+### Added — Tests
+
+- `criteria_index`: Typ-Ermittlung, `has_non_activity_type`, abhängige Kurse
+  (inkl. Ausschluss von Kursen ohne aktivierte Completion), gezieltes Purge.
+- `observer`: Aktivitätsabschluss wird bei reinen Aktivitäts-Kriterien nicht
+  eingereiht, wohl aber bei gemischten; `course_completed` reiht den abhängigen Kurs
+  ein; Sync-Modus reiht nichts ein.
+- `completion_booker`: Duration mit `timestart`, Duration mit `timestart = 0`,
+  Duration noch nicht abgelaufen, Duration ohne Einschreibung.
+
+### Offen (unverändert)
+
+- Entfernung des Synchron-Modus.
+- Umbau des Scope-Caches auf Kategorie-IDs statt Kurs-IDs.
+- Fälligkeitsbasierte Ad-hoc-Task-Architektur für Datums- und Dauer-Kriterien
+  (der `reconcile_task` bleibt bis dahin die einzige Quelle für diese Typen).
+
 ## [0.4.0] - 2026-07-09
 
 Audit-Patch: fachliche Korrektheit der Completion-Buchung, Skalierbarkeit des

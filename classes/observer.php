@@ -41,11 +41,19 @@ class observer {
     /**
      * React to an activity-completion state change.
      *
+     * Core marks and aggregates the activity criteria of this course for this user
+     * before the event fires, so only the remaining criterion types can still turn
+     * the course complete.
+     *
      * @param \core\event\course_module_completion_updated $event The triggering event.
      * @return void
      */
     public static function course_module_completion_updated(\core\event\course_module_completion_updated $event): void {
-        self::handle_completion_trigger((int)$event->courseid, (int)$event->relateduserid);
+        $courseid = (int)$event->courseid;
+        if (!criteria_index::has_non_activity_type($courseid)) {
+            return;
+        }
+        self::handle_completion_trigger($courseid, (int)$event->relateduserid);
     }
 
     /**
@@ -55,7 +63,28 @@ class observer {
      * @return void
      */
     public static function user_graded(\core\event\user_graded $event): void {
-        self::handle_completion_trigger((int)$event->courseid, (int)$event->relateduserid);
+        global $CFG;
+        require_once($CFG->libdir . '/completionlib.php');
+
+        $courseid = (int)$event->courseid;
+        if (!criteria_index::has_type($courseid, COMPLETION_CRITERIA_TYPE_GRADE)) {
+            return;
+        }
+        self::handle_completion_trigger($courseid, (int)$event->relateduserid);
+    }
+
+    /**
+     * React to a course completion by re-evaluating the courses that require it.
+     *
+     * @param \core\event\course_completed $event The triggering event.
+     * @return void
+     */
+    public static function course_completed(\core\event\course_completed $event): void {
+        $userid = (int)$event->relateduserid;
+
+        foreach (criteria_index::dependent_course_ids((int)$event->courseid) as $dependentid) {
+            self::handle_completion_trigger($dependentid, $userid);
+        }
     }
 
     /**
@@ -77,6 +106,23 @@ class observer {
         } catch (\Throwable $e) {
             debugging(
                 'local_instantcoursecompletion: scope cache purge failed: ' . $e->getMessage(),
+                DEBUG_DEVELOPER
+            );
+        }
+    }
+
+    /**
+     * Purge the cached criterion types after the course completion settings changed.
+     *
+     * @param \core\event\base $event The triggering event.
+     * @return void
+     */
+    public static function invalidate_criteria_index(base $event): void {
+        try {
+            criteria_index::purge((int)$event->courseid);
+        } catch (\Throwable $e) {
+            debugging(
+                'local_instantcoursecompletion: criteria index purge failed: ' . $e->getMessage(),
                 DEBUG_DEVELOPER
             );
         }

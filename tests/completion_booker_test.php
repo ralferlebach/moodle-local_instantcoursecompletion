@@ -79,6 +79,58 @@ final class completion_booker_test extends \advanced_testcase {
         return $cm;
     }
 
+
+    /**
+     * Insert an active manual enrolment without firing user_enrolment_created.
+     *
+     * @param \stdClass $course      Course record.
+     * @param \stdClass $user        User record.
+     * @param int       $timestart   Enrolment start, 0 for none.
+     * @param int       $timecreated Enrolment creation time.
+     * @return void
+     */
+    protected function enrol_user_direct(\stdClass $course, \stdClass $user, int $timestart, int $timecreated): void {
+        global $DB;
+
+        $enrolrec = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual']);
+        $enrolid = $enrolrec ? (int)$enrolrec->id : $DB->insert_record('enrol', (object)[
+            'enrol' => 'manual',
+            'courseid' => (int)$course->id,
+            'status' => 0,
+            'sortorder' => 0,
+            'timecreated' => $timecreated,
+            'timemodified' => $timecreated,
+        ]);
+
+        $DB->insert_record('user_enrolments', (object)[
+            'enrolid' => $enrolid,
+            'userid' => (int)$user->id,
+            'status' => 0,
+            'timestart' => $timestart,
+            'timeend' => 0,
+            'modifierid' => 0,
+            'timecreated' => $timecreated,
+            'timemodified' => $timecreated,
+        ]);
+    }
+
+    /**
+     * Add a duration criterion to a course.
+     *
+     * @param \stdClass $course      The course.
+     * @param int       $enrolperiod Seconds since enrolment required.
+     * @return void
+     */
+    protected function add_duration_criterion(\stdClass $course, int $enrolperiod): void {
+        global $DB;
+
+        $DB->insert_record('course_completion_criteria', (object)[
+            'course' => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_DURATION,
+            'enrolperiod' => $enrolperiod,
+        ]);
+    }
+
     /**
      * Invalid arguments and the site course are rejected before any DB work.
      *
@@ -345,5 +397,84 @@ final class completion_booker_test extends \advanced_testcase {
 
         $this->assertTrue($result);
         $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
+    }
+
+    /**
+     * An elapsed duration criterion completes as of the enrolment start plus the period.
+     *
+     * @return void
+     */
+    public function test_book_completes_duration_criterion_from_timestart(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
+
+        $timestart = time() - DAYSECS * 3;
+        $this->add_duration_criterion($course, DAYSECS);
+        $this->enrol_user_direct($course, $user, $timestart, time() - DAYSECS * 4);
+
+        $result = completion_booker::book((int)$course->id, (int)$user->id);
+        $this->resetDebugging();
+
+        $this->assertTrue($result);
+        $timecompleted = $DB->get_field('course_completions', 'timecompleted', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]);
+        $this->assertEquals($timestart + DAYSECS, (int)$timecompleted);
+    }
+
+    /**
+     * Without an enrolment start date, the enrolment creation time is used instead.
+     *
+     * completion_criteria_duration::review() ignores this fallback and would never
+     * complete such users, although the criterion's own cron does apply it.
+     *
+     * @return void
+     */
+    public function test_book_completes_duration_criterion_without_timestart(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
+
+        $timecreated = time() - DAYSECS * 3;
+        $this->add_duration_criterion($course, DAYSECS);
+        $this->enrol_user_direct($course, $user, 0, $timecreated);
+
+        $result = completion_booker::book((int)$course->id, (int)$user->id);
+        $this->resetDebugging();
+
+        $this->assertTrue($result);
+        $timecompleted = $DB->get_field('course_completions', 'timecompleted', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]);
+        $this->assertEquals($timecreated + DAYSECS, (int)$timecompleted);
+    }
+
+    /**
+     * A duration criterion that has not elapsed yet leaves the course open.
+     *
+     * @return void
+     */
+    public function test_book_returns_false_when_duration_not_elapsed(): void {
+        [$course, $user] = $this->course_and_user();
+
+        $this->add_duration_criterion($course, DAYSECS * 30);
+        $this->enrol_user_direct($course, $user, time() - HOURSECS, time() - HOURSECS);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+    }
+
+    /**
+     * A duration criterion without any enrolment cannot be satisfied.
+     *
+     * @return void
+     */
+    public function test_book_returns_false_for_duration_without_enrolment(): void {
+        [$course, $user] = $this->course_and_user();
+
+        $this->add_duration_criterion($course, DAYSECS);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
     }
 }

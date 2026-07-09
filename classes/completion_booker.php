@@ -104,7 +104,8 @@ class completion_booker {
         $skiptypes = self::externally_marked_types();
 
         foreach ($criteria as $criterion) {
-            if (in_array((int)$criterion->criteriatype, $skiptypes, true)) {
+            $type = (int)$criterion->criteriatype;
+            if (in_array($type, $skiptypes, true)) {
                 continue;
             }
 
@@ -113,18 +114,60 @@ class completion_booker {
                 continue;
             }
 
-            $timecompleted = self::criterion_completion_time($criterion);
-            if ($timecompleted === null) {
-                // Let core decide and record the criterion; it also populates
-                // type-specific fields such as gradefinal.
-                $criterion->review($criterioncompletion, true);
+            if ($type === COMPLETION_CRITERIA_TYPE_DATE) {
+                // The criterion is satisfied as of its end date, not as of now.
+                if ($criterion->review($criterioncompletion, false)) {
+                    $criterioncompletion->mark_complete((int)$criterion->timeend);
+                }
                 continue;
             }
 
-            if ($criterion->review($criterioncompletion, false)) {
-                $criterioncompletion->mark_complete($timecompleted);
+            if ($type === COMPLETION_CRITERIA_TYPE_DURATION) {
+                $duetime = self::duration_due_time($criterion, $userid);
+                if ($duetime !== null && $duetime <= time()) {
+                    $criterioncompletion->mark_complete($duetime);
+                }
+                continue;
             }
+
+            // Let core decide and record the criterion; it also populates
+            // type-specific fields such as gradefinal.
+            $criterion->review($criterioncompletion, true);
         }
+    }
+
+    /**
+     * The moment a duration criterion becomes satisfied for a user.
+     *
+     * completion_criteria_duration::review() reads ue.timestart only and therefore
+     * never completes users whose enrolment carries no start date. The criterion's own
+     * cron falls back to ue.timecreated in that case; this reproduces the cron rule so
+     * that both code paths agree. The earliest enrolment wins, as it does in cron.
+     *
+     * @param \completion_criteria $criterion The duration criterion.
+     * @param int                  $userid    User ID.
+     * @return int|null Timestamp, or null when the user has no usable enrolment.
+     */
+    protected static function duration_due_time(\completion_criteria $criterion, int $userid): ?int {
+        global $DB;
+
+        $enrolperiod = (int)$criterion->enrolperiod;
+        if ($enrolperiod <= 0) {
+            return null;
+        }
+
+        $timeenrolled = $DB->get_field_sql(
+            "SELECT MIN(CASE WHEN ue.timestart > 0 THEN ue.timestart ELSE ue.timecreated END)
+               FROM {user_enrolments} ue
+               JOIN {enrol} e ON e.id = ue.enrolid
+              WHERE e.courseid = :courseid AND ue.userid = :userid",
+            ['courseid' => (int)$criterion->course, 'userid' => $userid]
+        );
+
+        if (empty($timeenrolled)) {
+            return null;
+        }
+        return (int)$timeenrolled + $enrolperiod;
     }
 
     /**
@@ -138,23 +181,6 @@ class completion_booker {
             COMPLETION_CRITERIA_TYPE_ROLE,
             COMPLETION_CRITERIA_TYPE_UNENROL,
         ];
-    }
-
-    /**
-     * The timestamp a satisfied criterion should be recorded with.
-     *
-     * Date criteria are satisfied at their configured end date, not at evaluation
-     * time; this matches completion_criteria_date::cron(). All other types are
-     * recorded by core with the current time, signalled here by null.
-     *
-     * @param \completion_criteria $criterion The criterion.
-     * @return int|null Timestamp, or null to let core choose.
-     */
-    protected static function criterion_completion_time(\completion_criteria $criterion): ?int {
-        if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
-            return (int)$criterion->timeend;
-        }
-        return null;
     }
 
     /**

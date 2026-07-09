@@ -19,7 +19,7 @@
  *
  * All observers run after the triggering transaction has been committed: the
  * completion triggers write completion records and queue tasks, and the cache
- * invalidators must not discard a scope that a rolled-back change would restore.
+ * invalidators must not discard state that a rolled-back change would restore.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -37,6 +37,26 @@ $observers = [
     [
         'eventname' => '\core\event\user_graded',
         'callback' => '\local_instantcoursecompletion\observer::user_graded',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\course_completed',
+        'callback' => '\local_instantcoursecompletion\observer::course_completed',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\course_completion_updated',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_criteria_index',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\course_deleted',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_criteria_index',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\course_reset_ended',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_criteria_index',
         'internal' => false,
     ],
     [

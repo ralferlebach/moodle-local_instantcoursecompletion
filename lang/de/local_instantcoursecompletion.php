@@ -24,6 +24,8 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+$string['cachedef_coursecriteriatypes'] = 'Je Kurs konfigurierte Abschlusskriterien-Typen';
+$string['cachedef_scopecourseids'] = 'Aufgelöste Menge der Kurs-IDs im Wirkungsbereich';
 $string['event:completion_booked'] = 'Kursabschluss verbucht (sofort)';
 $string['pluginname'] = 'Sofortiger Kursabschluss';
 $string['privacy:metadata:log'] = 'Das Plugin „Sofortiger Kursabschluss" löst bei aktivierter Protokollierung ein completion_booked-Ereignis aus, wenn es einen Kursabschluss verbucht. Das Ereignis enthält Kurs, betroffene Person und Zeitpunkt und wird vom Protokollierungs-Subsystem gespeichert.';

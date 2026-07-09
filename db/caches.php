@@ -34,4 +34,16 @@ $definitions = [
         'staticacceleration' => true,
         'staticaccelerationsize' => 2,
     ],
+
+    // Criterion types configured per course, keyed by course ID. Read on the request
+    // path by the observers; the TTL bounds staleness after a restore, which raises
+    // no course_completion_updated event.
+    'coursecriteriatypes' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
+        'staticacceleration' => true,
+        'staticaccelerationsize' => 20,
+        'ttl' => 3600,
+    ],
 ];
