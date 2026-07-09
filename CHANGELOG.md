@@ -8,6 +8,104 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-09
+
+Audit-Patch: fachliche Korrektheit der Completion-Buchung, Skalierbarkeit des
+Reconcile-Tasks, korrekte Moodle-API-Nutzung. Maturity bewusst auf ALPHA
+zurückgesetzt, bis die Änderungen in CI und Pilotinstanz bestätigt sind.
+
+### Fixed — Completion-Korrektheit (P0)
+
+- **`completion_booker` verbucht wieder Kriterien-Datensätze.** Die Annahme aus
+  Session 002/003, `course_completion_criteria_completion` existiere in Moodle 4.5
+  nicht als Tabelle, war eine Verwechslung von Klassen- und Tabellenname: die Klasse
+  `completion_criteria_completion` bildet auf `course_completion_crit_compl` ab.
+  Die daraus abgeleitete Eigenbau-Aggregation ist entfernt. Neue Pipeline:
+  `get_user_completion()` → `review()` → `aggregate_completions()`.
+- **Selbstabschluss- und Rollen-Kriterien wurden nie erkannt.** `review()` erhielt
+  ein `completion_completion`- statt eines `completion_criteria_completion`-Objekts;
+  `completion_criteria_self::review()` und `..._role::review()` werten
+  `$completion->is_complete()` aus und lieferten daher nach dem Guard „Kurs bereits
+  abgeschlossen" konstant `false`. Beide Typen werden jetzt korrekt aggregiert,
+  aber niemals stellvertretend für die Person gesetzt; `unenrol` ebenso.
+- **Abschlusszeitpunkt.** `course_completions.timecompleted` entspricht jetzt dem
+  spätesten Kriteriums-Zeitpunkt (`aggregate_completions()`), nicht mehr `time()`.
+  Datums-Kriterien werden mit ihrem `timeend` verbucht, wie im Core-Cron.
+- **`gradefinal`** wird für Noten-Kriterien wieder geschrieben.
+- Inkonsistenz `course_completions.timecompleted` gesetzt bei leerem
+  `course_completion_crit_compl` ist damit ausgeschlossen.
+
+### Fixed — Einschreibungen und Skalierbarkeit (P0)
+
+- **`reconcile_task` nutzt `get_enrolled_sql(..., $onlyactive = true)`.** Die bisherige
+  Hand-SQL ignorierte `ue.timestart`, `ue.timeend` und den Aktivierungszustand des
+  Enrolment-Plugins; abgelaufene und künftige Einschreibungen wurden verbucht.
+- **Deckelung:** Cursor über Kurs-IDs in `config_plugins`, max. 200 Kurse und 5.000
+  (Kurs, Nutzer)-Paare je Lauf, `get_recordset_sql()` statt `get_fieldset_sql()`,
+  keine unbegrenzte `IN`-Klausel mehr (Scope-Filter in PHP statt im SQL).
+
+### Fixed — Moodle-API und Semantik (P1)
+
+- **Tag-Filter** lösen Namen über `core_tag_tag::get_by_name()` in Tag-IDs auf
+  (Normalisierung, Tag-Collection des Kurs-Tag-Bereichs) und filtern in SQL auf
+  `tag_instance.component = 'core'`. Bisher wurde `tag.rawname` verglichen —
+  datenbankabhängig case-sensitiv und ohne `component`-Diskriminator.
+- **Kategorie-Auflösung** per präfix-verankertem `path LIKE '<path>/%' OR id IN (…)`
+  statt `path LIKE '%/<id>/%'`. Der bisherige Ausdruck traf die ausgewählte Kategorie
+  selbst nicht und verhinderte jede Indexnutzung.
+- **`SCOPE_ADELE` ohne `local_adele`** ergibt jetzt einen leeren Wirkungsbereich statt
+  eines stillen Fallbacks auf *alle Kurse*; die Einstellungsseite warnt.
+- **`db/events.php`**: alle Observer mit `'internal' => false` — Schreibzugriffe und
+  Task-Einreihung dürfen nicht in der auslösenden Transaktion laufen.
+  `tag_updated` und `tag_deleted` als Invalidierungs-Events ergänzt.
+- **`settings.php`**: `$ADMIN->fulltree`-Guard, `set_updatedcallback()` direkt am
+  Setting-Objekt statt über `$settings->settings->{…}`.
+- **`report.php`**: `admin_externalpage_setup()`; der ungedeckelte
+  `get_events_select_count()` über `{logstore_standard_log}` entfällt; Kurse und
+  Nutzer werden in zwei Sammelabfragen statt zwei Abfragen je Zeile geladen.
+- **Privacy**: `null_provider` war unzutreffend. Der Provider deklariert nun den
+  Subsystem-Link auf `core_log` (das `completion_booked`-Event) und implementiert die
+  Request-Provider als No-ops.
+- **Ad-hoc-Task** läuft als Systemtask (kein `set_userid()`); `queue_adhoc_task()`
+  prüft für gesetzte Nutzer-IDs `require_active_user()` und wirft bei gesperrten
+  Konten. Der Task prüft den Wirkungsbereich vor der Ausführung erneut.
+- **Tag-Einstellungen** akzeptieren Zeilenumbrüche zusätzlich zu Kommas.
+- **Sync-Modus** schreibt kein `mtrace()` mehr in den Webrequest (`CLI_SCRIPT`-Guard).
+
+### Changed
+
+- `db/caches.php`: `simpledata => true` (die Payload besteht aus Skalaren).
+- Kommentare, die Entwurfsentscheidungen protokollieren, durch Verhaltensverträge
+  ersetzt (`version.php`, `db/*`, `classes/*`).
+- Maturity: `MATURITY_BETA` → `MATURITY_ALPHA`.
+
+### Removed
+
+- `tests/generator/lib.php` — von keinem Test verwendet.
+- Toter Code: `if (empty($typesatisfied))` in `completion_booker`,
+  `if ($event === null)` in `report.php`, doppelter `filter_definition()`-Aufruf und
+  doppelte `completion_completion`-Instanziierung.
+
+### Added — Tests
+
+- `completion_booker`: Kriterien-Datensatz-Konsistenz, `gradefinal`, Datums-Zeitstempel,
+  Selbstabschluss (nie stellvertretend, aber aggregiert).
+- `reconcile_task`: abgelaufene und künftige Einschreibung, Cursor-Reset.
+- `scope_resolver`: ausgewählte Unterkategorie, Groß-/Kleinschreibung bei Tags,
+  Zeilenumbruch-Trennung, unbekannter Include-Tag, `adele` ohne Plugin.
+- `privacy`: Subsystem-Link auf `core_log`.
+
+### Offen (bewusst nicht in diesem Patch)
+
+- Der Observer auf `course_module_completion_updated` ist für Einzelaktionen
+  redundant: `completion_info::internal_set_data()` ruft bereits
+  `\core_completion\api::mark_course_completions_activity_criteria()` und
+  `aggregate_completions()` auf, bevor das Event feuert. Entfernung ist eine
+  Produktentscheidung.
+- Entfernung des Synchron-Modus.
+- Fälligkeitsbasierte Ad-hoc-Task-Architektur für Datums-/Dauer-Kriterien.
+- Umbau des Scope-Caches auf Kategorie-IDs statt Kurs-IDs.
+
 ## [0.3.1] - 2026-07-09
 
 ### Added
@@ -20,8 +118,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - `completion_booked`-Event: `objectid` = courseid + `get_objectid_mapping()` ergänzt.
 - Report-Eintrag unter `reports` in `settings.php` (`admin_externalpage`).
 - **Tests — Grade-Criterion** (2 neue Tests in `completion_booker_test.php`):
-  `test_book_returns_true_when_grade_criterion_met` und `..._not_met` — direkte
-  `grade_grade`-Insertion für das Course-Total-Item, kein Aggregations-Engine nötig.
+  `test_book_returns_true_when_grade_criterion_met` und `..._not_met`.
 - **Tests — Date-Criterion** (2 neue Tests):
   `test_book_returns_true_when_date_criterion_met` (Datum 2020) und `..._not_met` (Datum 2099).
 - Lang-Strings `report:*` (de + en) alphabetisch eingefügt.
@@ -31,61 +128,67 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - README vollständig aktualisiert: CI-Matrix, Supported-Criterion-Types, Report-Abschnitt,
   korrekter Status (Beta, Phase 1 + 2 vollständig).
 
+### Fixed (kein MINOR-Increment, iterativ in dieser Session)
+- **Makefile PHPUnit-Reinit**: Bash-Präzedenzfehler behoben — `if ! cd X && Y` band
+  `!` nur an `cd`, wodurch der Reinit-Zweig nie erreicht wurde. Korrigiert zu
+  `if ! (cd X && Y)`. Moodle 4.5.12 änderte den Exit-Code für „veraltete Umgebung"
+  von 135 auf 141, wodurch der Bug erstmals sichtbar wurde.
+- **Grade-Criterion-Tests**: Nach zwei fehlgeschlagenen Ansätzen (direkter
+  `grade_grades`-Insert, dann ORM-Insert + `set_field()`) stabile Lösung gefunden:
+  `completion_criteria_grade::review()` liest den `finalgrade` des Course-Total-Items,
+  der bei jedem (auch implizit ausgelösten) Regrade aus echten Sub-Items neu aggregiert
+  wird — direkte Manipulation dieses Feldes wird verworfen. Fix: echtes manuelles
+  Grade-Item anlegen, `grade_item::update_final_grade()` (öffentliche API) nutzen,
+  anschließend `grade_regrade_final_grades()` explizit aufrufen.
+- **Date-Criterion-Tests**: `completion_criteria_date::review()` prüft `$this->timeend`,
+  nicht `$this->date` (beide Spalten existieren in der DB, nur `timeend` wird
+  ausgewertet). Insert-Feld entsprechend korrigiert.
+- **PHPUnit-Init-Pfad (Moodle 5.x)**: `admin/tool/phpunit/cli/init.php` liegt ab
+  Moodle 5.x unter `public/`. Init-Schritt prüft jetzt `moodle/public/admin/...`
+  zuerst, Root-Pfad als Fallback — analog zum bereits bestehenden Behat-Init-Guard.
+- **Moodle 5.2 + PHP 8.5**: Moodle 5.2s `composer.lock` pinnt `ezyang/htmlpurifier`
+  v4.18.0 und `openspout` v4.28.5, beide mit PHP-8.4-Obergrenze. PHP 8.5 ist für
+  Moodle 5.2 aktuell nicht installierbar — CI-Matrix auf PHP 8.3 + 8.4 (statt 8.4 + 8.5)
+  angepasst, identisch zu 5.1. Weicht vom ursprünglichen Stufenplan ab; zu
+  revidieren, sobald Moodles Lock-File PHP 8.5 unterstützt.
+
 ## [0.3.0] - 2026-07-09
 
 ### Changed
-- CI-Matrix progressiv: PHP 8.2–8.5 gestaffelt nach Moodle-Branch; DB-Tiers
-  classic (MariaDB 10.11 + PgSQL 15) für 4.5/5.0, modern (MariaDB 11.4 + PgSQL 17)
-  für 5.1/5.2; DB-Images via Matrix-Variablen in Services.
+- CI-Matrix progressiv: PHP 8.2–8.4 gestaffelt nach Moodle-Branch (4.5→8.2/8.3,
+  5.0/5.1→8.3/8.4, 5.2→8.3/8.4); DB-Tiers classic (MariaDB 10.11 + PgSQL 15) für
+  4.5/5.0, modern (MariaDB 11.4 + PgSQL 17) für 5.1/5.2; DB-Images via
+  Matrix-Variablen in Services.
 - Behat: GHA Selenium-Service + PHP-Dev-Server-Start statt `--start-servers`;
   versionsbewusste Web-Root-Erkennung (`moodle/public/` für Moodle 5.x).
 - MariaDB-Health-Check: `mysqladmin ping` → `healthcheck.sh --su=mysql --connect
-  --innodb_initialized` (kompatibel mit MariaDB 10.11 und 11.4).
+  --innodb_initialized` (kompatibel mit MariaDB 10.11 und 11.4; `mysqladmin ping`
+  schlug unter 11.4 fehl).
 - Behat-init-Guard: prüft `moodle/public/admin/tool/behat/cli/init.php` zuerst,
   Root-Pfad als Fallback (Moodle 5.x public/-Struktur).
 - `moodle-release.yml`: identische Korrekturen, PHP-Versionen für 5.1/5.2 auf 8.3+.
+
+### Fixed
+- Behat-Config-Fehler ("requested config file does not exist") auf Moodle 5.1/5.2:
+  verursacht durch fehlenden `public/`-Fallback im Behat-init-Guard.
 
 ## [0.2.2] - 2026-07-09
 
 ### Added
 - Phase 2 Schritt 2: `reconcile_task::execute()` vollständig implementiert.
-  - `eligible_course_ids()`: SCOPE_ALL → direkte DB-Query auf `course_completion_criteria`
-    + `course`; SCOPE_CATEGORIES/ADELE → `scope_resolver::get_scope_course_ids()` + Filter.
-  - `process_course(int $courseid)`: aktive Einschreibungen ohne `timecompleted` via
-    LEFT JOIN; `completion_booker::book()` je Nutzer; Exception-Handling per Nutzer.
-  - Tests: direkte `{enrol}`/`{user_enrolments}`-Insertion vermeidet `user_enrolment_created`;
-    `resetDebugging()` nach `mark_complete()` unterdrückt `local_adele`-Observer-Debugging.
 
 ### Fixed (kein MINOR-Increment)
-- `completion_booker::book()`: komplette Neufassung — `get_completions()` und Pass-1/Pass-2
-  wurden durch direktes `$criterion->review($completion, false)` ersetzt.
-  Hintergrund: `course_completion_criteria_completion` existiert in Moodle 4.5 nicht als
-  eigenständige Tabelle. Die stabile API ist `review($completion, false)` (kein Schreiben
-  von Criterion-Level-Records) + Aggregation der bool-Ergebnisse + `mark_complete()`.
-- Tests `completion_booker_test`, `reconcile_task_test`: Activity-Kriterium +
-  `update_state()` statt direkter Criterion-Completion-Tabellen-Insertions; `resetDebugging()`
-  nach `mark_complete()` statt `getDebuggingMessages()` (letztere löscht den Puffer nicht).
-- Makefile `phpunit`-Target: `util.php --diag` statt PHPUnit-Output-Scan — fängt Exit 135
-  (outdated) UND Exit 140 (not initialised) korrekt ab.
-- `moodle-ci.yml`: PHPUnit- und Behat-Matrix auf 5.1 + 5.2 erweitert; Behat-init-Schritt
-  bedingt (`if [ -f admin/tool/behat/cli/init.php ]`) für Moodle 5.1/5.2-Kompatibilität.
-- PHPCS-Variablennamen: Unterstriche entfernt (`$cached_completions` → `$cachedcompletions`,
-  `$type_satisfied` → `$typesatisfied`, `$all_met` → `$allmet`).
-- `$plugin->supported = [405, 502]` (Range, 2 Elemente) statt Liste — Moodle erwartet
-  genau `[min, max]`; Liste verursachte `coding_exception` beim PHPUnit-Init.
+- `completion_booker::book()`: Neufassung auf `$criterion->review($completion, false)`.
+- Makefile `phpunit`-Target: `util.php --diag` statt PHPUnit-Output-Scan.
+- PHPCS-Variablennamen: Unterstriche entfernt.
+- `$plugin->supported = [405, 502]` (Range, 2 Elemente) statt Liste.
 
 ## [0.2.1] - 2026-07-09
 
 ### Added
 - Phase 2 Schritt 1: `completion_booker::book()` mit Kursebenen-Aggregation.
 - Integration-Tests: guard-2-Test (already-complete), Phase-2 satisfied/not-met.
-- Session-Konvention: `session-NNN.md` mit Bindestrich.
 - Blueprint v3.0: §0.1, CI-Matrix Kap. 12, Phase-2-Status, supported range.
-
-### Fixed
-- `$plugin->supported` auf `[405, 502]` korrigiert.
-- Variablennamen ohne Unterstriche (Moodle PHPCS).
-- `docs/sessions/session-001.md` Naming-Fix (Bindestrich).
 
 ## [0.2.0] - 2026-07-09
 
@@ -93,23 +196,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - CI-Matrix auf Moodle 4.5 / 5.0 / 5.1 / 5.2 erweitert.
 - PHP 8.1 für alle Moodle-5.x-Zweige ausgeschlossen.
 
-### Documentation
-- Blueprint v2.0 → v3.0 (vorbereitet).
-- Session-Konvention, sessionstart.txt aktualisiert.
-
 ## [0.1.1] - 2026-07-08
 
 ### Fixed
 - Lang-Dateien strikt alphabetisch (16 Warnungen bereinigt).
 - Observer-PHPDoc auf konkrete Event-Typen gehoben.
 - Unit-Tests ohne Einschreibungs-Events.
-
-### Changed
-- `handle_trigger()` → öffentlich `handle_completion_trigger()`; `reset_seen()` ergänzt.
-- `phpunit.xml` entfernt (redundant).
-
-### Verified
-- CI-Pipeline grün: Moodle 4.5 / 5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL.
 
 ## [0.1.0]
 

@@ -17,19 +17,6 @@
 /**
  * Resolves which courses the completion observers act on.
  *
- * Three modes:
- *   - all         : every course on the instance (site course excluded).
- *   - categories  : selected category branches (incl. sub-categories) plus optional
- *                   include / exclude course-tag filters.
- *   - adele       : delegates the filter definition to local_adele's settings
- *                   (catfilter / includetags / excludetags) when that plugin is
- *                   installed, keeping both plugins' notion of "relevant courses"
- *                   in sync.
- *
- * The resolved set of in-scope course IDs is cached in a MUC application cache and
- * invalidated on any structural change (see db/events.php) or settings change
- * (see lib.php). The synchronous request path only ever performs a cache lookup.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -44,7 +31,7 @@ class scope_resolver {
     /** @var string Scope: all courses on the instance. */
     public const SCOPE_ALL = 'all';
 
-    /** @var string Scope: selected category branches (+ optional tag filters). */
+    /** @var string Scope: selected category branches plus optional tag filters. */
     public const SCOPE_CATEGORIES = 'categories';
 
     /** @var string Scope: delegate the filter definition to local_adele. */
@@ -54,7 +41,7 @@ class scope_resolver {
     protected const COMPONENT = 'local_instantcoursecompletion';
 
     /**
-     * Whether local_adele is installed (enables the "adele" scope option).
+     * Whether local_adele is installed.
      *
      * @return bool
      */
@@ -65,17 +52,15 @@ class scope_resolver {
     /**
      * Return the effective scope mode from configuration.
      *
-     * Falls back to SCOPE_ALL, and downgrades SCOPE_ADELE to SCOPE_ALL if
-     * local_adele is not (or no longer) installed.
+     * A configured adele scope resolves to an empty scope when local_adele is absent,
+     * because widening it to every course would silently exceed the administrator's
+     * intent.
      *
      * @return string One of the SCOPE_* constants.
      */
     public static function get_mode(): string {
         $mode = get_config(self::COMPONENT, 'scopemode');
         if ($mode === false || $mode === '') {
-            return self::SCOPE_ALL;
-        }
-        if ($mode === self::SCOPE_ADELE && !self::adele_available()) {
             return self::SCOPE_ALL;
         }
         return (string)$mode;
@@ -94,15 +79,13 @@ class scope_resolver {
         if (self::get_mode() === self::SCOPE_ALL) {
             return true;
         }
-        $set = self::get_scope_course_ids();
-        return isset($set[$courseid]);
+        return isset(self::get_scope_course_ids()[$courseid]);
     }
 
     /**
-     * Return the resolved set of in-scope course IDs as a map (id => true).
+     * Return the resolved set of in-scope course IDs as a map of id to true.
      *
-     * For SCOPE_ALL this returns an empty map — callers should use is_in_scope(),
-     * which short-circuits SCOPE_ALL without materialising every course ID.
+     * Empty for SCOPE_ALL; callers use is_in_scope(), which short-circuits that mode.
      *
      * @return array<int, bool>
      */
@@ -111,18 +94,20 @@ class scope_resolver {
         if ($mode === self::SCOPE_ALL) {
             return [];
         }
+        if ($mode === self::SCOPE_ADELE && !self::adele_available()) {
+            return [];
+        }
 
+        $filter = self::filter_definition($mode);
         $cache = \cache::make(self::COMPONENT, 'scopecourseids');
-        $key   = self::cache_key($mode);
+        $key = sha1(serialize([$mode, $filter]));
 
         $cached = $cache->get($key);
         if ($cached !== false) {
             return $cached;
         }
 
-        [$categoryids, $includetags, $excludetags] = self::filter_definition($mode);
-        $set = self::build_course_id_set($categoryids, $includetags, $excludetags);
-
+        $set = self::build_course_id_set($filter[0], $filter[1], $filter[2]);
         $cache->set($key, $set);
         return $set;
     }
@@ -137,44 +122,29 @@ class scope_resolver {
     }
 
     /**
-     * Build the cache key from the scope-relevant configuration.
+     * Resolve the filter definition for the given mode.
      *
      * @param string $mode Effective scope mode.
-     * @return string
-     */
-    protected static function cache_key(string $mode): string {
-        [$categoryids, $includetags, $excludetags] = self::filter_definition($mode);
-        return sha1(serialize([$mode, $categoryids, $includetags, $excludetags]));
-    }
-
-    /**
-     * Resolve the filter definition (categories + tags) for the given mode.
-     *
-     * @param string $mode Effective scope mode.
-     * @return array{0: int[], 1: string[], 2: string[]} [categoryids, includetags, excludetags]
+     * @return array{0: int[], 1: string[], 2: string[]} Category IDs, include tags, exclude tags.
      */
     protected static function filter_definition(string $mode): array {
-        if ($mode === self::SCOPE_ADELE) {
-            $categoryids = self::csv_to_ints(get_config('local_adele', 'catfilter'));
-            $includetags = self::csv_to_strings(get_config('local_adele', 'includetags'));
-            $excludetags = self::csv_to_strings(get_config('local_adele', 'excludetags'));
-            return [$categoryids, $includetags, $excludetags];
-        }
+        $source = ($mode === self::SCOPE_ADELE) ? 'local_adele' : self::COMPONENT;
+        $categorykey = ($mode === self::SCOPE_ADELE) ? 'catfilter' : 'categories';
 
-        // SCOPE_CATEGORIES (own configuration).
-        $categoryids = self::csv_to_ints(get_config(self::COMPONENT, 'categories'));
-        $includetags = self::csv_to_strings(get_config(self::COMPONENT, 'includetags'));
-        $excludetags = self::csv_to_strings(get_config(self::COMPONENT, 'excludetags'));
-        return [$categoryids, $includetags, $excludetags];
+        return [
+            self::csv_to_ints(get_config($source, $categorykey)),
+            self::csv_to_strings(get_config($source, 'includetags')),
+            self::csv_to_strings(get_config($source, 'excludetags')),
+        ];
     }
 
     /**
      * Build the set of in-scope course IDs for the given filter definition.
      *
-     * @param int[]    $categoryids Selected category IDs (sub-categories resolved here).
-     * @param string[] $includetags Course must carry at least one of these tags (if any).
+     * @param int[]    $categoryids Selected category IDs; sub-categories are resolved here.
+     * @param string[] $includetags Course must carry at least one of these tags, if any.
      * @param string[] $excludetags Course must carry none of these tags.
-     * @return array<int, bool> Map of course ID => true.
+     * @return array<int, bool> Map of course ID to true.
      */
     protected static function build_course_id_set(array $categoryids, array $includetags, array $excludetags): array {
         global $DB;
@@ -184,38 +154,42 @@ class scope_resolver {
             return [];
         }
 
-        [$catinsql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED, 'cat');
-        $where = ['c.id <> :siteid', "c.category $catinsql"];
-        $params['siteid'] = SITEID;
+        $includeids = self::resolve_tag_ids($includetags);
+        if (!empty($includetags) && empty($includeids)) {
+            // The filter names only tags that do not exist, so nothing can match it.
+            return [];
+        }
+        $excludeids = self::resolve_tag_ids($excludetags);
 
-        if (!empty($includetags)) {
-            [$insql, $inparams] = $DB->get_in_or_equal($includetags, SQL_PARAMS_NAMED, 'itag');
+        [$catinsql, $params] = $DB->get_in_or_equal($catids, SQL_PARAMS_NAMED, 'cat');
+        $params['siteid'] = SITEID;
+        $where = ['c.id <> :siteid', "c.category $catinsql"];
+
+        if (!empty($includeids)) {
+            [$insql, $inparams] = $DB->get_in_or_equal($includeids, SQL_PARAMS_NAMED, 'itag');
             $where[] = "EXISTS (SELECT 1 FROM {tag_instance} ti
-                                  JOIN {tag} t ON t.id = ti.tagid
-                                 WHERE ti.itemtype = 'course' AND ti.itemid = c.id AND t.rawname $insql)";
+                                 WHERE ti.component = 'core' AND ti.itemtype = 'course'
+                                   AND ti.itemid = c.id AND ti.tagid $insql)";
             $params += $inparams;
         }
 
-        if (!empty($excludetags)) {
-            [$exsql, $exparams] = $DB->get_in_or_equal($excludetags, SQL_PARAMS_NAMED, 'xtag');
-            $where[] = "NOT EXISTS (SELECT 1 FROM {tag_instance} ti2
-                                      JOIN {tag} t2 ON t2.id = ti2.tagid
-                                     WHERE ti2.itemtype = 'course' AND ti2.itemid = c.id AND t2.rawname $exsql)";
+        if (!empty($excludeids)) {
+            [$exsql, $exparams] = $DB->get_in_or_equal($excludeids, SQL_PARAMS_NAMED, 'xtag');
+            $where[] = "NOT EXISTS (SELECT 1 FROM {tag_instance} tx
+                                     WHERE tx.component = 'core' AND tx.itemtype = 'course'
+                                       AND tx.itemid = c.id AND tx.tagid $exsql)";
             $params += $exparams;
         }
 
         $sql = 'SELECT c.id FROM {course} c WHERE ' . implode(' AND ', $where);
-        $ids = $DB->get_fieldset_sql($sql, $params);
-
-        return array_fill_keys(array_map('intval', $ids), true);
+        return array_fill_keys(array_map('intval', $DB->get_fieldset_sql($sql, $params)), true);
     }
 
     /**
      * Expand the selected categories to include all of their sub-categories.
      *
-     * Matches on course_categories.path, which contains the ID of every ancestor
-     * (and the category itself), e.g. "/3/17/". A selected parent therefore also
-     * matches all of its descendants.
+     * Descendants are matched by a prefix comparison against the selected category's
+     * own path, which keeps the LIKE anchored and therefore index-usable.
      *
      * @param int[] $categoryids Selected category IDs.
      * @return int[] All category IDs in the selected branches.
@@ -223,40 +197,63 @@ class scope_resolver {
     protected static function resolve_category_subtree(array $categoryids): array {
         global $DB;
 
-        $categoryids = array_values(array_filter(array_map('intval', $categoryids)));
+        $categoryids = array_values(array_unique(array_filter(array_map('intval', $categoryids))));
         if (empty($categoryids)) {
             return [];
         }
 
-        $likes = [];
-        $params = [];
-        foreach ($categoryids as $i => $cid) {
-            $key = 'p' . $i;
-            $likes[] = $DB->sql_like('path', ':' . $key);
-            $params[$key] = '%/' . $cid . '/%';
+        [$insql, $params] = $DB->get_in_or_equal($categoryids, SQL_PARAMS_NAMED, 'cid');
+        $paths = $DB->get_records_select_menu('course_categories', "id $insql", $params, '', 'id, path');
+        if (empty($paths)) {
+            return [];
         }
 
-        $sql = 'SELECT id FROM {course_categories} WHERE ' . implode(' OR ', $likes);
-        $ids = $DB->get_fieldset_sql($sql, $params);
+        $likes = [];
+        foreach ($paths as $id => $path) {
+            $key = 'path' . $id;
+            $likes[] = $DB->sql_like('path', ':' . $key, true, true, false);
+            $params[$key] = $DB->sql_like_escape($path) . '/%';
+        }
 
-        // Union with the explicitly selected IDs as a defensive fallback.
-        return array_values(array_unique(array_merge(array_map('intval', $ids), $categoryids)));
+        $sql = "SELECT id FROM {course_categories} WHERE id $insql OR " . implode(' OR ', $likes);
+        return array_map('intval', $DB->get_fieldset_sql($sql, $params));
     }
 
     /**
-     * Parse a comma-separated list into an array of positive integers.
+     * Resolve course tag names to tag IDs using the tag API.
+     *
+     * Going through the API applies Moodle's tag normalisation and restricts the
+     * lookup to the collection the course tag area belongs to.
+     *
+     * @param string[] $names Raw tag names from configuration.
+     * @return int[] IDs of the tags that exist.
+     */
+    protected static function resolve_tag_ids(array $names): array {
+        if (empty($names)) {
+            return [];
+        }
+
+        $collectionid = \core_tag_area::get_collection('core', 'course');
+        $ids = [];
+        foreach ($names as $name) {
+            $tag = \core_tag_tag::get_by_name($collectionid, $name, 'id');
+            if ($tag) {
+                $ids[] = (int)$tag->id;
+            }
+        }
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * Parse a separated list into an array of positive integers.
      *
      * @param mixed $value Raw config value.
      * @return int[]
      */
     protected static function csv_to_ints($value): array {
-        if ($value === false || $value === null || $value === '') {
-            return [];
-        }
-        $parts = array_map('trim', explode(',', (string)$value));
         $ints = [];
-        foreach ($parts as $part) {
-            if ($part !== '' && ctype_digit($part)) {
+        foreach (self::split_list($value) as $part) {
+            if (ctype_digit($part)) {
                 $ints[] = (int)$part;
             }
         }
@@ -264,16 +261,28 @@ class scope_resolver {
     }
 
     /**
-     * Parse a comma-separated list into an array of non-empty trimmed strings.
+     * Parse a separated list into an array of non-empty trimmed strings.
      *
      * @param mixed $value Raw config value.
      * @return string[]
      */
     protected static function csv_to_strings($value): array {
+        return self::split_list($value);
+    }
+
+    /**
+     * Split a config value on commas and line breaks.
+     *
+     * Textarea settings store one entry per line, per comma, or both.
+     *
+     * @param mixed $value Raw config value.
+     * @return string[]
+     */
+    protected static function split_list($value): array {
         if ($value === false || $value === null || $value === '') {
             return [];
         }
-        $parts = array_map('trim', explode(',', (string)$value));
-        return array_values(array_filter($parts, static fn($p) => $p !== ''));
+        $parts = array_map('trim', preg_split('/[\r\n,]+/', (string)$value));
+        return array_values(array_filter($parts, static fn($part) => $part !== ''));
     }
 }

@@ -25,17 +25,13 @@
 defined('MOODLE_INTERNAL') || die();
 
 $tasks = [
-
-    // Optional safety net: periodically re-checks in-scope courses for completions
-    // that event triggers cannot catch (e.g. date/duration criteria). Runs only when
-    // local_instantcoursecompletion/reconcile_enabled is on; otherwise it exits early.
     [
         'classname' => '\local_instantcoursecompletion\task\reconcile_task',
-        'blocking'  => 0,
-        'minute'    => '17',
-        'hour'      => '*/6',
-        'day'       => '*',
-        'month'     => '*',
+        'blocking' => 0,
+        'minute' => '17',
+        'hour' => '*/6',
+        'day' => '*',
+        'month' => '*',
         'dayofweek' => '*',
     ],
 ];

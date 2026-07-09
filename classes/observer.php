@@ -17,11 +17,6 @@
 /**
  * Event observers for local_instantcoursecompletion.
  *
- * These callbacks run in the web request and must stay lightweight and must never
- * throw: a cheap scope lookup (cached) followed by either enqueuing a deduplicated
- * ad-hoc task (async mode) or a direct booking call (sync mode). All heavy work is
- * done in \local_instantcoursecompletion\task\book_completion_task.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -37,7 +32,7 @@ use local_instantcoursecompletion\task\book_completion_task;
  */
 class observer {
     /**
-     * Per-request de-duplication registry of already-handled "courseid:userid" pairs.
+     * Course and user pairs already handled in the current request.
      *
      * @var array<string, bool>
      */
@@ -54,7 +49,7 @@ class observer {
     }
 
     /**
-     * React to a gradebook grade change (grade-to-pass based criteria).
+     * React to a gradebook grade change.
      *
      * @param \core\event\user_graded $event The triggering event.
      * @return void
@@ -66,14 +61,18 @@ class observer {
     /**
      * Purge the resolved-scope cache after a structural change.
      *
-     * Registered for course / category / tag create-update-delete events. This
-     * callback intentionally does no computation beyond clearing the cache.
-     *
      * @param \core\event\base $event The triggering event.
      * @return void
      */
     public static function invalidate_scope_cache(base $event): void {
         try {
+            if (scope_resolver::get_mode() === scope_resolver::SCOPE_ALL) {
+                // No scope set is cached in this mode.
+                return;
+            }
+            if (!self::event_affects_scope($event)) {
+                return;
+            }
             scope_resolver::purge_cache();
         } catch (\Throwable $e) {
             debugging(
@@ -84,10 +83,28 @@ class observer {
     }
 
     /**
-     * Handle a completion trigger: scope check, de-duplication, then enqueue or run.
+     * Whether the event can change which courses are in scope.
      *
-     * Public so it can be driven directly by unit tests without going through the
-     * full activity-completion and enrolment machinery.
+     * Tag events fire for every taggable item type; only course tags matter here.
+     *
+     * @param \core\event\base $event The triggering event.
+     * @return bool
+     */
+    protected static function event_affects_scope(base $event): bool {
+        $tagevents = [
+            \core\event\tag_added::class,
+            \core\event\tag_removed::class,
+        ];
+        foreach ($tagevents as $tagevent) {
+            if ($event instanceof $tagevent) {
+                return ($event->other['itemtype'] ?? '') === 'course';
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Handle a completion trigger: scope check, de-duplication, then enqueue or run.
      *
      * @param int $courseid Affected course ID.
      * @param int $userid   Affected user ID.
@@ -99,12 +116,10 @@ class observer {
                 return;
             }
 
-            // Cheap, cached scope check — the only real work on the request path.
             if (!scope_resolver::is_in_scope($courseid)) {
                 return;
             }
 
-            // Collapse repeated triggers for the same (course, user) within this request.
             $key = $courseid . ':' . $userid;
             if (isset(self::$seen[$key])) {
                 return;
@@ -112,23 +127,20 @@ class observer {
             self::$seen[$key] = true;
 
             if (get_config('local_instantcoursecompletion', 'processingmode') === 'sync') {
-                // Synchronous mode: book immediately in the request (small scopes only).
                 completion_booker::book($courseid, $userid);
                 return;
             }
 
-            // Asynchronous mode (default): enqueue a deduplicated ad-hoc task.
+            // Booking is a system operation; the affected user travels in the custom data.
             $task = new book_completion_task();
             $task->set_custom_data((object)[
                 'courseid' => $courseid,
-                'userid'   => $userid,
+                'userid' => $userid,
             ]);
-            $task->set_userid($userid);
 
             // The second argument makes the queue collapse identical pending tasks.
             \core\task\manager::queue_adhoc_task($task, true);
         } catch (\Throwable $e) {
-            // Observers must never fatal — log and continue.
             debugging(
                 'local_instantcoursecompletion: trigger handling failed: ' . $e->getMessage(),
                 DEBUG_DEVELOPER
@@ -138,9 +150,6 @@ class observer {
 
     /**
      * Reset the per-request de-duplication registry.
-     *
-     * Relevant for long-running CLI processes and for unit tests, where a single
-     * PHP process handles many simulated requests.
      *
      * @return void
      */

@@ -17,14 +17,6 @@
 /**
  * Tests for the completion booker.
  *
- * Guard tests use minimal fixtures (no DB criterion setup needed).
- *
- * Integration tests for the Phase-2 aggregation path use an ACTIVITY criterion
- * combined with completion_info::update_state() to satisfy the criterion. This
- * writes only to course_modules_completion (always present in Moodle's schema)
- * and to course_completions when book() succeeds — avoiding any dependency on
- * the internal criterion-level completion table.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -39,26 +31,71 @@ namespace local_instantcoursecompletion;
  */
 final class completion_booker_test extends \advanced_testcase {
     /**
+     * Load completionlib and reset the database before each test.
+     *
+     * @return void
+     */
+    protected function setUp(): void {
+        global $CFG;
+        parent::setUp();
+        require_once($CFG->libdir . '/completionlib.php');
+        $this->resetAfterTest(true);
+    }
+
+    /**
+     * Create a completion-enabled course and a user.
+     *
+     * @return array Two elements: course record, user record.
+     */
+    protected function course_and_user(): array {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        return [$course, $user];
+    }
+
+    /**
+     * Add an activity completion criterion backed by a manual-completion page.
+     *
+     * @param \stdClass $course The course.
+     * @return \stdClass The course module record.
+     */
+    protected function add_activity_criterion(\stdClass $course): \stdClass {
+        global $DB;
+
+        $page = $this->getDataGenerator()->create_module('page', [
+            'course' => $course->id,
+            'completion' => COMPLETION_TRACKING_MANUAL,
+        ]);
+        $cm = get_coursemodule_from_id('page', $page->cmid);
+
+        $DB->insert_record('course_completion_criteria', (object)[
+            'course' => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_ACTIVITY,
+            'module' => 'page',
+            'moduleinstance' => (int)$cm->id,
+            'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
+        ]);
+
+        return $cm;
+    }
+
+    /**
      * Invalid arguments and the site course are rejected before any DB work.
      *
      * @return void
      */
     public function test_book_rejects_invalid_input(): void {
-        $this->resetAfterTest(true);
-
         $this->assertFalse(completion_booker::book(0, 1));
         $this->assertFalse(completion_booker::book(1, 0));
         $this->assertFalse(completion_booker::book((int)SITEID, 1));
     }
 
     /**
-     * A course without completion enabled is skipped (guard 1).
+     * A course without completion enabled is skipped.
      *
      * @return void
      */
     public function test_book_returns_false_when_completion_disabled(): void {
-        $this->resetAfterTest(true);
-
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 0]);
         $user = $this->getDataGenerator()->create_user();
 
@@ -66,286 +103,247 @@ final class completion_booker_test extends \advanced_testcase {
     }
 
     /**
-     * A completion-enabled course with no criteria is a no-op (guard 3).
+     * A completion-enabled course with no criteria is a no-op.
      *
      * @return void
      */
     public function test_book_returns_false_without_criteria(): void {
-        $this->resetAfterTest(true);
-
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
+        [$course, $user] = $this->course_and_user();
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
     }
 
     /**
-     * When the course is already complete, book() is idempotent and returns true (guard 2).
+     * A course that is already complete returns true without further work.
      *
      * @return void
      */
     public function test_book_returns_true_when_already_complete(): void {
-        global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
+        global $DB;
+        [$course, $user] = $this->course_and_user();
 
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        // Pre-mark the course complete via direct insert into course_completions
-        // (a core table guaranteed to exist in every Moodle installation).
         $DB->insert_record('course_completions', (object)[
-            'userid'        => (int)$user->id,
-            'course'        => (int)$course->id,
-            'timeenrolled'  => time() - 200,
-            'timestarted'   => time() - 100,
+            'userid' => (int)$user->id,
+            'course' => (int)$course->id,
+            'timeenrolled' => time() - 200,
+            'timestarted' => time() - 100,
             'timecompleted' => time() - 10,
-            'reaggregate'   => 0,
+            'reaggregate' => 0,
         ]);
 
         $this->assertTrue(completion_booker::book((int)$course->id, (int)$user->id));
     }
 
     /**
-     * When an activity criterion is satisfied, book() marks the course complete.
-     *
-     * Uses COMPLETION_CRITERIA_TYPE_ACTIVITY and completion_info::update_state() so
-     * that only course_modules_completion (always present) is written during setup,
-     * without coupling to any internal criterion-completion table.
+     * A satisfied activity criterion is recorded and the course is marked complete.
      *
      * @return void
      */
-    public function test_book_returns_true_when_all_criteria_satisfied(): void {
-        global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
+    public function test_book_marks_criterion_completion_and_course(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
+        $cm = $this->add_activity_criterion($course);
 
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        // Create a page module with manual completion tracking.
-        $page = $this->getDataGenerator()->create_module('page', [
-            'course'     => $course->id,
-            'completion' => COMPLETION_TRACKING_MANUAL,
-        ]);
-        $cm = get_coursemodule_from_id('page', $page->cmid);
-
-        // Insert the activity completion criterion definition.
-        $DB->insert_record('course_completion_criteria', (object)[
-            'course'            => (int)$course->id,
-            'criteriatype'      => COMPLETION_CRITERIA_TYPE_ACTIVITY,
-            'module'            => 'page',
-            'moduleinstance'    => (int)$cm->id,
-            'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
-        ]);
-
-        // Mark the page as complete for the user via the public completion API.
-        // review() reads course_modules_completion; no separate criterion-completion
-        // table is accessed or created during this call.
-        $info = new \completion_info($course);
-        $info->update_state($cm, COMPLETION_COMPLETE, (int)$user->id);
+        (new \completion_info($course))->update_state($cm, COMPLETION_COMPLETE, (int)$user->id);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
-
-        // Consume any debugging() calls from external plugin observers on course_completed.
-        // local_adele's observer calls require_phpunit_isolation() which generates a
-        // debugging() call under PHPUnit. resetDebugging() clears the buffer; this keeps the assertion
-        // independent of which other plugins are installed.
         $this->resetDebugging();
 
         $this->assertTrue($result);
+        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
 
-        $freshinfo = new \completion_info($course);
-        $this->assertTrue($freshinfo->is_course_complete((int)$user->id));
+        // The criterion record must exist too, or core reports would contradict the course state.
+        $this->assertTrue($DB->record_exists_select(
+            'course_completion_crit_compl',
+            'course = :course AND userid = :userid AND timecompleted > 0',
+            ['course' => (int)$course->id, 'userid' => (int)$user->id]
+        ));
     }
 
     /**
-     * When a grade criterion is configured and the user has a passing course grade, book() succeeds.
-     *
-     * Uses COMPLETION_CRITERIA_TYPE_GRADE. completion_criteria_grade::review() reads the
-     * finalgrade of the COURSE-TOTAL grade item, which Moodle computes by aggregating all
-     * grade sub-items in the course. Writing directly into the course-total's own grade_grade
-     * row is unreliable: the next regrade (which can be triggered implicitly on fetch) will
-     * recompute it as NULL because there are no real sub-items to aggregate from.
-     *
-     * The robust approach is to create one real (manual) grade item, set its grade via the
-     * public grade_item::update_final_grade() API, and then explicitly call
-     * grade_regrade_final_grades() so the course-total item aggregates a genuine sub-item.
+     * An unsatisfied activity criterion leaves both the criterion and the course open.
      *
      * @return void
      */
-    public function test_book_returns_true_when_grade_criterion_met(): void {
+    public function test_book_returns_false_when_criteria_not_met(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
+        $this->add_activity_criterion($course);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertFalse($DB->record_exists('course_completion_crit_compl', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]));
+    }
+
+    /**
+     * A passing course grade satisfies a grade criterion and stores the final grade.
+     *
+     * @return void
+     */
+    public function test_book_records_gradefinal_for_grade_criterion(): void {
         global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
         require_once($CFG->libdir . '/gradelib.php');
+        [$course, $user] = $this->course_and_user();
 
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        // Grade completion criterion: passing grade 50 (out of the course total's 0-100 range).
         $DB->insert_record('course_completion_criteria', (object)[
-            'course'       => (int)$course->id,
+            'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_GRADE,
-            'gradepass'    => 50.0,
+            'gradepass' => 50.0,
         ]);
 
-        // One real manual grade item feeding the course total, set via the public grade API.
         $gradeitem = new \grade_item([
-            'courseid'  => (int)$course->id,
-            'itemtype'  => 'manual',
-            'itemname'  => 'Test manual grade item',
+            'courseid' => (int)$course->id,
+            'itemtype' => 'manual',
+            'itemname' => 'Test manual grade item',
             'gradetype' => GRADE_TYPE_VALUE,
-            'grademax'  => 100,
-            'grademin'  => 0,
+            'grademax' => 100,
+            'grademin' => 0,
         ]);
         $gradeitem->insert();
         $gradeitem->update_final_grade((int)$user->id, 75.0);
         grade_regrade_final_grades((int)$course->id);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
-
-        // Consume debugging() calls from external plugin observers on course_completed.
         $this->resetDebugging();
 
         $this->assertTrue($result);
-        $freshinfo = new \completion_info($course);
-        $this->assertTrue($freshinfo->is_course_complete((int)$user->id));
+        $gradefinal = $DB->get_field('course_completion_crit_compl', 'gradefinal', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]);
+        $this->assertEqualsWithDelta(75.0, (float)$gradefinal, 0.001);
     }
 
     /**
-     * When a grade criterion exists but the user's course grade is below passing, book() returns false.
+     * A failing course grade leaves a grade criterion unsatisfied.
      *
      * @return void
      */
     public function test_book_returns_false_when_grade_criterion_not_met(): void {
         global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
         require_once($CFG->libdir . '/gradelib.php');
-
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
+        [$course, $user] = $this->course_and_user();
 
         $DB->insert_record('course_completion_criteria', (object)[
-            'course'       => (int)$course->id,
+            'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_GRADE,
-            'gradepass'    => 50.0,
+            'gradepass' => 50.0,
         ]);
 
-        // Same real-item approach as the met test, with a below-threshold grade.
         $gradeitem = new \grade_item([
-            'courseid'  => (int)$course->id,
-            'itemtype'  => 'manual',
-            'itemname'  => 'Test manual grade item',
+            'courseid' => (int)$course->id,
+            'itemtype' => 'manual',
+            'itemname' => 'Test manual grade item',
             'gradetype' => GRADE_TYPE_VALUE,
-            'grademax'  => 100,
-            'grademin'  => 0,
+            'grademax' => 100,
+            'grademin' => 0,
         ]);
         $gradeitem->insert();
         $gradeitem->update_final_grade((int)$user->id, 30.0);
         grade_regrade_final_grades((int)$course->id);
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
-
-        $freshinfo = new \completion_info($course);
-        $this->assertFalse($freshinfo->is_course_complete((int)$user->id));
+        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
     }
 
     /**
-     * When a date criterion is configured with a date in the past, book() succeeds.
-     *
-     * completion_criteria_date::review() returns true iff $this->date <= time(). Setting
-     * the date to 2020-01-01 guarantees the criterion is met without clock dependency.
+     * A date criterion in the past completes the course as of that date, not now.
      *
      * @return void
      */
-    public function test_book_returns_true_when_date_criterion_met(): void {
-        global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
+    public function test_book_uses_criterion_date_as_completion_time(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
 
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        // Date in the past — criterion is satisfied immediately.
-        // completion_criteria_date::review() checks $this->timeend (the field written by the
-        // course completion form and read back by the criterion class); NOT $this->date.
+        $timeend = mktime(0, 0, 0, 1, 1, 2020);
         $DB->insert_record('course_completion_criteria', (object)[
-            'course'       => (int)$course->id,
+            'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
-            'timeend'      => mktime(0, 0, 0, 1, 1, 2020),
+            'timeend' => $timeend,
         ]);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
-
-        // Consume debugging() calls from external plugin observers on course_completed.
         $this->resetDebugging();
 
         $this->assertTrue($result);
-        $freshinfo = new \completion_info($course);
-        $this->assertTrue($freshinfo->is_course_complete((int)$user->id));
+        $timecompleted = $DB->get_field('course_completions', 'timecompleted', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]);
+        $this->assertEquals($timeend, (int)$timecompleted);
     }
 
     /**
-     * When a date criterion is configured with a date in the future, book() returns false.
+     * A date criterion in the future leaves the course open.
      *
      * @return void
      */
     public function test_book_returns_false_when_date_criterion_not_met(): void {
-        global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
+        global $DB;
+        [$course, $user] = $this->course_and_user();
 
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        // Date far in the future — criterion is not yet satisfied (timeend field, same as above).
         $DB->insert_record('course_completion_criteria', (object)[
-            'course'       => (int)$course->id,
+            'course' => (int)$course->id,
             'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
-            'timeend'      => mktime(0, 0, 0, 1, 1, 2099),
+            'timeend' => mktime(0, 0, 0, 1, 1, 2099),
         ]);
 
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
-
-        $freshinfo = new \completion_info($course);
-        $this->assertFalse($freshinfo->is_course_complete((int)$user->id));
+        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
     }
 
     /**
-     * When an activity criterion exists but the activity is not complete, book() returns false.
+     * A self-completion criterion is never satisfied on the user's behalf.
      *
      * @return void
      */
-    public function test_book_returns_false_when_criteria_not_met(): void {
-        global $CFG, $DB;
-        $this->resetAfterTest(true);
-        require_once($CFG->libdir . '/completionlib.php');
+    public function test_book_never_marks_self_criterion(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
 
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        $page = $this->getDataGenerator()->create_module('page', [
-            'course'     => $course->id,
-            'completion' => COMPLETION_TRACKING_MANUAL,
-        ]);
-        $cm = get_coursemodule_from_id('page', $page->cmid);
-
-        // Criterion definition only — activity is NOT marked complete.
         $DB->insert_record('course_completion_criteria', (object)[
-            'course'            => (int)$course->id,
-            'criteriatype'      => COMPLETION_CRITERIA_TYPE_ACTIVITY,
-            'module'            => 'page',
-            'moduleinstance'    => (int)$cm->id,
+            'course' => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_SELF,
             'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
         ]);
 
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+        $this->assertFalse($DB->record_exists('course_completion_crit_compl', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]));
+    }
+
+    /**
+     * A self-completion criterion the user already satisfied is aggregated into the course.
+     *
+     * @return void
+     */
+    public function test_book_aggregates_existing_self_criterion(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_user();
+
+        $criterionid = $DB->insert_record('course_completion_criteria', (object)[
+            'course' => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_SELF,
+            'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
+        ]);
+
+        // Record the criterion the way core does when the user self-completes.
+        $criterioncompletion = new \completion_criteria_completion([
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+            'criteriaid' => (int)$criterionid,
+        ]);
+        $criterioncompletion->mark_complete();
+
         $result = completion_booker::book((int)$course->id, (int)$user->id);
+        $this->resetDebugging();
 
-        $this->assertFalse($result);
-
-        $freshinfo = new \completion_info($course);
-        $this->assertFalse($freshinfo->is_course_complete((int)$user->id));
+        $this->assertTrue($result);
+        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
     }
 }

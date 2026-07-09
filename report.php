@@ -15,11 +15,10 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Admin report: accelerated course completions booked by local_instantcoursecompletion.
+ * Admin report: the most recent course completions booked by this plugin.
  *
- * Reads completion_booked events from the standard logstore. Requires the
- * "Enable logging" plugin setting to be on so that events are actually fired.
- * Shows at most the 100 most recent events.
+ * Reads completion_booked events from the standard logstore, which only contains
+ * them while the "Enable logging" setting is on.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -27,31 +26,24 @@
  */
 
 require_once('../../config.php');
+require_once($CFG->libdir . '/adminlib.php');
+
+/** @var int Number of events listed; the log table is too large for an unbounded count. */
+const LOCAL_INSTANTCOURSECOMPLETION_REPORT_ROWS = 100;
 
 $component = 'local_instantcoursecompletion';
 
-$PAGE->set_url(new moodle_url('/local/instantcoursecompletion/report.php'));
-$PAGE->set_context(context_system::instance());
-
-require_login();
-require_capability('moodle/site:config', context_system::instance());
+admin_externalpage_setup($component . '_report');
 
 $title = get_string('report:title', $component);
-$PAGE->set_title($title);
-$PAGE->set_heading($title);
-
 echo $OUTPUT->header();
 echo $OUTPUT->heading($title);
 
-// Advisory: warn when logging is disabled so events are not recorded.
 if (!get_config($component, 'enablelogging')) {
     echo $OUTPUT->notification(get_string('report:loggingdisabled', $component), 'info');
 }
 
-// Retrieve an SQL-compatible logstore reader.
-$manager = get_log_manager();
-$stores = $manager->get_readers('core\log\sql_reader');
-
+$stores = get_log_manager()->get_readers('core\log\sql_reader');
 if (empty($stores)) {
     echo $OUTPUT->notification(get_string('report:nostorewarning', $component), 'warning');
     echo $OUTPUT->footer();
@@ -61,13 +53,18 @@ if (empty($stores)) {
 /** @var \core\log\sql_reader $store */
 $store = reset($stores);
 
-// Query by component name and fully-qualified event class name.
-$eventname = '\local_instantcoursecompletion\event\completion_booked';
-$select = "component = :component AND eventname = :eventname";
-$params = ['component' => $component, 'eventname' => $eventname];
-
-$total = $store->get_events_select_count($select, $params);
-$events = $store->get_events_select($select, $params, 'timecreated DESC', 0, 100);
+$select = 'component = :component AND eventname = :eventname';
+$params = [
+    'component' => $component,
+    'eventname' => '\local_instantcoursecompletion\event\completion_booked',
+];
+$events = $store->get_events_select(
+    $select,
+    $params,
+    'timecreated DESC',
+    0,
+    LOCAL_INSTANTCOURSECOMPLETION_REPORT_ROWS
+);
 
 if (empty($events)) {
     echo $OUTPUT->notification(get_string('report:noevents', $component), 'info');
@@ -75,7 +72,18 @@ if (empty($events)) {
     exit;
 }
 
-echo html_writer::tag('p', get_string('report:totalcount', $component, $total));
+// Resolve the referenced courses and users in two queries rather than two per row.
+$courseids = [];
+$userids = [];
+foreach ($events as $event) {
+    $courseids[(int)$event->courseid] = true;
+    $userids[(int)($event->relateduserid ?: $event->userid)] = true;
+}
+$courses = $DB->get_records_list('course', 'id', array_keys($courseids), '', 'id, fullname');
+$namefields = implode(', ', \core_user\fields::get_name_fields());
+$users = $DB->get_records_list('user', 'id', array_keys($userids), '', 'id, ' . $namefields);
+
+echo html_writer::tag('p', get_string('report:rowcount', $component, LOCAL_INSTANTCOURSECOMPLETION_REPORT_ROWS));
 
 $table = new html_table();
 $table->head = [
@@ -87,30 +95,22 @@ $table->attributes['class'] = 'admintable generaltable';
 $table->data = [];
 
 foreach ($events as $event) {
-    if ($event === null) {
-        continue;
-    }
-
     $courseid = (int)$event->courseid;
     $userid = (int)($event->relateduserid ?: $event->userid);
 
-    // Course cell.
-    try {
-        $course = get_course($courseid);
+    if (isset($courses[$courseid])) {
         $coursecell = html_writer::link(
             new moodle_url('/course/view.php', ['id' => $courseid]),
-            format_string($course->fullname)
+            format_string($courses[$courseid]->fullname)
         );
-    } catch (\dml_exception $e) {
+    } else {
         $coursecell = get_string('report:unknowncourse', $component, $courseid);
     }
 
-    // User cell.
-    $user = core_user::get_user($userid);
-    if ($user) {
+    if (isset($users[$userid])) {
         $usercell = html_writer::link(
             new moodle_url('/user/view.php', ['id' => $userid]),
-            fullname($user)
+            fullname($users[$userid])
         );
     } else {
         $usercell = get_string('report:unknownuser', $component, $userid);

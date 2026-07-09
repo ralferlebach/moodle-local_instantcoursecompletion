@@ -26,14 +26,11 @@ defined('MOODLE_INTERNAL') || die();
 
 $definitions = [
 
-    // Resolved set of in-scope course IDs (keyed by scope-configuration hash).
-    // Kept small and read on the synchronous request path, so static acceleration
-    // is enabled. Invalidated by observer::invalidate_scope_cache() and by the
-    // settings updated-callback (see lib.php).
+    // Resolved set of in-scope course IDs, keyed by a hash of the scope configuration.
     'scopecourseids' => [
-        'mode'               => cache_store::MODE_APPLICATION,
-        'simplekeys'         => true,
-        'simpledata'         => false,
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
         'staticacceleration' => true,
         'staticaccelerationsize' => 2,
     ],

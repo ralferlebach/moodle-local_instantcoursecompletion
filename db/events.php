@@ -17,11 +17,9 @@
 /**
  * Event observer registration for local_instantcoursecompletion.
  *
- * Two groups of observers:
- *  1. Completion triggers — events after which a course completion might newly
- *     be achievable for the affected user.
- *  2. Scope-cache invalidation — structural changes that can alter which courses
- *     are in scope. These callbacks only purge a cache; they never compute.
+ * All observers run after the triggering transaction has been committed: the
+ * completion triggers write completion records and queue tasks, and the cache
+ * invalidators must not discard a scope that a rolled-back change would restore.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -31,48 +29,64 @@
 defined('MOODLE_INTERNAL') || die();
 
 $observers = [
-
-    // Completion triggers.
     [
         'eventname' => '\core\event\course_module_completion_updated',
-        'callback'  => '\local_instantcoursecompletion\observer::course_module_completion_updated',
+        'callback' => '\local_instantcoursecompletion\observer::course_module_completion_updated',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\user_graded',
-        'callback'  => '\local_instantcoursecompletion\observer::user_graded',
+        'callback' => '\local_instantcoursecompletion\observer::user_graded',
+        'internal' => false,
     ],
-
-    // Scope-cache invalidation.
     [
         'eventname' => '\core\event\course_created',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\course_updated',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\course_deleted',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\course_category_created',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\course_category_updated',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\course_category_deleted',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\tag_added',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
     [
         'eventname' => '\core\event\tag_removed',
-        'callback'  => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\tag_updated',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\tag_deleted',
+        'callback' => '\local_instantcoursecompletion\observer::invalidate_scope_cache',
+        'internal' => false,
     ],
 ];
