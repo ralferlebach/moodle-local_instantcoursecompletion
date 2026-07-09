@@ -1,0 +1,66 @@
+## Session-Ende – local_instantcoursecompletion · Session [NR]
+
+**Datum:** [DATUM]
+**Dauer:** ca. [X] Minuten
+
+---
+
+### Was wurde erledigt?
+
+- [ ] (Eintragen, konkret mit Dateinamen/Klassen)
+
+---
+
+### Entscheidungen getroffen
+
+| Thema | Entscheidung | Begründung |
+|---|---|---|
+| | | |
+
+---
+
+### Entwurfsentscheidungen geändert / zurückgestellt
+
+[Keine — oder: Beschreibung der Änderung und warum]
+
+---
+
+### Offene Punkte für die nächste Session
+
+- [ ] (Eintragen, mit Phase-2-Marker im Code)
+
+---
+
+### Testlauf-Ergebnis
+
+```
+PHPUnit: [OK / FAIL – X tests, Y assertions]
+PHPCS:   [OK / FAIL – N warnings]
+PHPDoc:  [OK / FAIL – N warnings]
+Behat:   [OK / FAIL / SKIP]
+```
+
+---
+
+### Verzeichnis-Snapshot (changed files)
+
+```bash
+git diff --name-only HEAD
+```
+
+```
+[HIER AUSGABE EINFÜGEN]
+```
+
+---
+
+### Für die nächste Session einfügen in sessionstart.txt
+
+**Aktueller Entwicklungsstand:**
+> [KURZBESCHREIBUNG DES STANDS]
+
+**Zuletzt abgeschlossen:**
+> [WAS IN DIESER SESSION FERTIG WURDE]
+
+**Als nächstes geplant:**
+> [WAS ALS NÄCHSTES KOMMT]

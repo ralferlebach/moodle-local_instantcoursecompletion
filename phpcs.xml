@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<ruleset name="local_instantcoursecompletion">
+    <description>PHPCS configuration for local_instantcoursecompletion.</description>
+    <rule ref="moodle"/>
+    <exclude-pattern>*/tools/*</exclude-pattern>
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+</ruleset>

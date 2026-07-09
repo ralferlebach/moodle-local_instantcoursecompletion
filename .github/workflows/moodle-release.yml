@@ -1,0 +1,211 @@
+##############################################################################
+# GitHub Actions Release CI – local_instantcoursecompletion
+#
+# Triggered on push / PR to main.
+# Provides the "CI complete" status check for branch protection.
+#
+# Progressive PHP × DB matrix (Session 003):
+#   Moodle 4.5  PHP 8.2 (pgsql/15)  + PHP 8.3 (mariadb/10.11)
+#   Moodle 5.0  PHP 8.3 (pgsql/15)  + PHP 8.4 (mariadb/10.11)
+#   Moodle 5.1  PHP 8.3 (pgsql/17)  + PHP 8.4 (mariadb/11.4)
+#   Moodle 5.2  PHP 8.4 (pgsql/17)  + PHP 8.5 (mariadb/11.4)
+#
+# Selenium is started as a GHA service (pre-pulled). The PHP built-in web
+# server is started on port 8000 before Behat init. --start-servers is NOT
+# used in the behat command.
+#
+# The plugin has NO external plugin dependencies; nothing extra is installed.
+##############################################################################
+
+name: Moodle Plugin Release CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ci-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MOODLE_CI: '^4'
+  COMPOSER_NO_INTERACTION: 1
+  COMPOSER_PROCESS_TIMEOUT: 0
+  COMPOSER_NO_AUDIT: 1
+  PGPASSWORD: moodle
+
+jobs:
+
+  ci:
+    name: "CI / ${{ matrix.moodle-branch }} / PHP ${{ matrix.php }} / ${{ matrix.db.engine }}"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Moodle 4.5 — PHP 8.2 + 8.3, classic DB (MariaDB 10.11 / PostgreSQL 15).
+          - { moodle-branch: MOODLE_405_STABLE, php: '8.2', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:10.11', pgsql_image: 'postgres:15' } }
+          - { moodle-branch: MOODLE_405_STABLE, php: '8.3', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:10.11', pgsql_image: 'postgres:15' } }
+          # Moodle 5.0 — PHP 8.3 + 8.4, classic DB.
+          - { moodle-branch: MOODLE_500_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:10.11', pgsql_image: 'postgres:15' } }
+          - { moodle-branch: MOODLE_500_STABLE, php: '8.4', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:10.11', pgsql_image: 'postgres:15' } }
+          # Moodle 5.1 — PHP 8.3 + 8.4, modern DB (MariaDB 11.4 / PostgreSQL 17).
+          - { moodle-branch: MOODLE_501_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
+          - { moodle-branch: MOODLE_501_STABLE, php: '8.4', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
+          # Moodle 5.2 — PHP 8.3 + 8.4, modern DB.
+          # PHP 8.5 is excluded here too: Moodle 5.2's composer.lock still pins
+          # ezyang/htmlpurifier v4.18.0 and openspout v4.28.5, both capped at PHP 8.4.
+          - { moodle-branch: MOODLE_502_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
+          - { moodle-branch: MOODLE_502_STABLE, php: '8.4', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
+
+    services:
+      mariadb:
+        image: ${{ matrix.db.mariadb_image }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --su=mysql --connect --innodb_initialized"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      postgres:
+        image: ${{ matrix.db.pgsql_image }}
+        env:
+          POSTGRES_USER:     moodle
+          POSTGRES_PASSWORD: moodle
+          POSTGRES_DB:       postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s --health-timeout 5s --health-retries 3
+      selenium:
+        image: selenium/standalone-chrome:latest
+        options: >-
+          --shm-size=2gb
+          --health-cmd="curl -fsSL http://localhost:4444/status"
+          --health-interval=15s
+          --health-timeout=30s
+          --health-retries=5
+        ports:
+          - 4444:4444
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: plugin
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: zip, gd, intl, xmlrpc, soap, mbstring, pdo_mysql, pdo_pgsql
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Install en_AU.UTF-8 locale
+        run: sudo locale-gen en_AU.UTF-8 && sudo update-locale
+
+      - name: Initialise moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist \
+            moodlehq/moodle-plugin-ci ci ${{ env.MOODLE_CI }}
+          echo "$GITHUB_WORKSPACE/ci/bin"        >> "$GITHUB_PATH"
+          echo "$GITHUB_WORKSPACE/ci/vendor/bin" >> "$GITHUB_PATH"
+
+      - name: Set TRAVIS_BRANCH
+        run: |
+          BRANCH=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
+          echo "TRAVIS_BRANCH=${BRANCH:-main}" >> "$GITHUB_ENV"
+
+      - name: Install Moodle and plugin (no test init)
+        run: |
+          moodle-plugin-ci install \
+            --plugin ./plugin \
+            --db-host 127.0.0.1 \
+            --db-port ${{ matrix.db.port }} \
+            --db-user ${{ matrix.db.user }} \
+            --db-pass ${{ matrix.db.pass }} \
+            --db-name ${{ matrix.db.name }} \
+            --no-init
+        env:
+          DB:            ${{ matrix.db.type }}
+          MOODLE_BRANCH: ${{ matrix.moodle-branch }}
+
+      - name: Initialise PHPUnit environment
+        run: |
+          if [ -f moodle/public/admin/tool/phpunit/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/phpunit/cli/init.php)
+          else
+            (cd moodle && php admin/tool/phpunit/cli/init.php)
+          fi
+
+      - name: Start PHP built-in web server
+        run: |
+          if [ -d "${{ github.workspace }}/moodle/public" ]; then
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle/public" \
+              > /dev/null 2>&1 &
+          else
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle" \
+              > /dev/null 2>&1 &
+          fi
+          sleep 2
+
+      - name: Initialise Behat environment
+        run: |
+          if [ -f moodle/public/admin/tool/behat/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/behat/cli/init.php)
+          elif [ -f moodle/admin/tool/behat/cli/init.php ]; then
+            (cd moodle && php admin/tool/behat/cli/init.php)
+          fi
+
+      - name: PHP Lint
+        run: moodle-plugin-ci phplint
+
+      - name: PHP Copy/Paste Detector
+        run: moodle-plugin-ci phpcpd || true
+
+      - name: Moodle Code Checker (PHPCS)
+        run: moodle-plugin-ci phpcs --max-warnings 0
+
+      - name: Moodle PHPDoc Checker
+        run: moodle-plugin-ci phpdoc --max-warnings 0
+
+      - name: Validate plugin structure
+        run: moodle-plugin-ci validate
+
+      - name: Mustache lint
+        run: moodle-plugin-ci mustache
+
+      - name: Grunt
+        run: moodle-plugin-ci grunt --max-lint-warnings 0
+
+      - name: PHPUnit
+        run: moodle-plugin-ci phpunit --fail-on-warning
+
+      - name: Behat
+        run: |
+          moodle-plugin-ci behat \
+            --profile chrome \
+            --tags "@local_instantcoursecompletion&&~@broken"
+
+  ci-complete:
+    name: CI complete
+    needs: ci
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - name: All matrix jobs must have succeeded
+        run: |
+          result="${{ needs.ci.result }}"
+          if [[ "$result" == "success" ]]; then
+            echo "All CI matrix jobs passed."
+          else
+            echo "CI result: $result — one or more matrix jobs failed or were cancelled."
+            exit 1
+          fi
