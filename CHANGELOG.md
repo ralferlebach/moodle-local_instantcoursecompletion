@@ -8,6 +8,43 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-09
+
+### Added
+- **Admin-Report** `report.php`: listet beschleunigte Kursabschlüsse aus dem Standard-Logstore.
+  Erreichbar unter Site-Administration > Berichte > Beschleunigte Kursabschlüsse.
+  Zeigt Zeitpunkt, Kurs und Nutzer; begrenzt auf 100 Einträge, neueste zuerst.
+  Hinweis bei deaktivierter Protokollierung und fehlendem SQL-Logstore.
+- `completion_booked`-Event wird in `completion_booker::log()` jetzt tatsächlich ausgelöst
+  (wenn `enablelogging` aktiv und `outcome = 'booked'`); ermöglicht Logstore-Abfragen im Report.
+- `completion_booked`-Event: `objectid` = courseid + `get_objectid_mapping()` ergänzt.
+- Report-Eintrag unter `reports` in `settings.php` (`admin_externalpage`).
+- **Tests — Grade-Criterion** (2 neue Tests in `completion_booker_test.php`):
+  `test_book_returns_true_when_grade_criterion_met` und `..._not_met` — direkte
+  `grade_grade`-Insertion für das Course-Total-Item, kein Aggregations-Engine nötig.
+- **Tests — Date-Criterion** (2 neue Tests):
+  `test_book_returns_true_when_date_criterion_met` (Datum 2020) und `..._not_met` (Datum 2099).
+- Lang-Strings `report:*` (de + en) alphabetisch eingefügt.
+
+### Changed
+- Maturity: `MATURITY_ALPHA` → `MATURITY_BETA`.
+- README vollständig aktualisiert: CI-Matrix, Supported-Criterion-Types, Report-Abschnitt,
+  korrekter Status (Beta, Phase 1 + 2 vollständig).
+
+## [0.3.0] - 2026-07-09
+
+### Changed
+- CI-Matrix progressiv: PHP 8.2–8.5 gestaffelt nach Moodle-Branch; DB-Tiers
+  classic (MariaDB 10.11 + PgSQL 15) für 4.5/5.0, modern (MariaDB 11.4 + PgSQL 17)
+  für 5.1/5.2; DB-Images via Matrix-Variablen in Services.
+- Behat: GHA Selenium-Service + PHP-Dev-Server-Start statt `--start-servers`;
+  versionsbewusste Web-Root-Erkennung (`moodle/public/` für Moodle 5.x).
+- MariaDB-Health-Check: `mysqladmin ping` → `healthcheck.sh --su=mysql --connect
+  --innodb_initialized` (kompatibel mit MariaDB 10.11 und 11.4).
+- Behat-init-Guard: prüft `moodle/public/admin/tool/behat/cli/init.php` zuerst,
+  Root-Pfad als Fallback (Moodle 5.x public/-Struktur).
+- `moodle-release.yml`: identische Korrekturen, PHP-Versionen für 5.1/5.2 auf 8.3+.
+
 ## [0.2.2] - 2026-07-09
 
 ### Added

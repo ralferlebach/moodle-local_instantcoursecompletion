@@ -206,7 +206,11 @@ jobs:
           - { moodle: MOODLE_501_STABLE, php: '8.2' }
           - { moodle: MOODLE_501_STABLE, php: '8.5' }
           - { moodle: MOODLE_502_STABLE, php: '8.2' }
-          - { moodle: MOODLE_502_STABLE, php: '8.3' }
+          # PHP 8.5 excluded for 5.2: Moodle 5.2's composer.lock still pins
+          # ezyang/htmlpurifier v4.18.0 and openspout v4.28.5, both capped at
+          # PHP 8.4 — 8.5 is not yet installable regardless of our CI config.
+          # Revisit once Moodle's own lock file catches up.
+          - { moodle: MOODLE_502_STABLE, php: '8.5' }
           # DB tier constraints: classic for 4.5 + 5.0, modern for 5.1 + 5.2.
           - { moodle: MOODLE_501_STABLE, db: { tier: classic } }
           - { moodle: MOODLE_502_STABLE, db: { tier: classic } }
@@ -220,7 +224,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping --silent"
+          --health-cmd="healthcheck.sh --su=mysql --connect --innodb_initialized"
           --health-interval=10s --health-retries=10
       pgsql:
         image: ${{ matrix.db.pgsql_image }}
@@ -274,7 +278,13 @@ jobs:
           MOODLE_BRANCH: ${{ matrix.moodle }}
 
       - name: Initialise PHPUnit environment
-        run: cd moodle && php admin/tool/phpunit/cli/init.php
+        run: |
+          # Moodle 5.x moved admin/ under public/; earlier versions keep it at the root.
+          if [ -f moodle/public/admin/tool/phpunit/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/phpunit/cli/init.php)
+          else
+            (cd moodle && php admin/tool/phpunit/cli/init.php)
+          fi
 
       - name: PHPUnit – all tests
         run: moodle-plugin-ci phpunit --fail-on-warning
@@ -307,7 +317,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping --silent"
+          --health-cmd="healthcheck.sh --su=mysql --connect --innodb_initialized"
           --health-interval=10s --health-retries=10
       selenium:
         image: selenium/standalone-chrome:latest
@@ -364,14 +374,25 @@ jobs:
 
       - name: Start PHP built-in web server
         run: |
-          php -S localhost:8000 -t "${{ github.workspace }}/moodle" \
-            > /dev/null 2>&1 &
+          # Moodle 5.x serves from moodle/public/; earlier versions from moodle/.
+          if [ -d "${{ github.workspace }}/moodle/public" ]; then
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle/public" \
+              > /dev/null 2>&1 &
+          else
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle" \
+              > /dev/null 2>&1 &
+          fi
           sleep 2
 
       - name: Initialise Behat environment
         run: |
-          if [ -f moodle/admin/tool/behat/cli/init.php ]; then
-            cd moodle && php admin/tool/behat/cli/init.php
+          # moodle-plugin-ci places admin/ under public/ for Moodle 5.x.
+          if [ -f moodle/public/admin/tool/behat/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/behat/cli/init.php)
+          elif [ -f moodle/admin/tool/behat/cli/init.php ]; then
+            (cd moodle && php admin/tool/behat/cli/init.php)
           fi
 
       - name: Behat – plugin scenarios

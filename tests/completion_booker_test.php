@@ -160,6 +160,160 @@ final class completion_booker_test extends \advanced_testcase {
     }
 
     /**
+     * When a grade criterion is configured and the user has a passing course grade, book() succeeds.
+     *
+     * Uses COMPLETION_CRITERIA_TYPE_GRADE. completion_criteria_grade::review() reads the
+     * finalgrade of the COURSE-TOTAL grade item, which Moodle computes by aggregating all
+     * grade sub-items in the course. Writing directly into the course-total's own grade_grade
+     * row is unreliable: the next regrade (which can be triggered implicitly on fetch) will
+     * recompute it as NULL because there are no real sub-items to aggregate from.
+     *
+     * The robust approach is to create one real (manual) grade item, set its grade via the
+     * public grade_item::update_final_grade() API, and then explicitly call
+     * grade_regrade_final_grades() so the course-total item aggregates a genuine sub-item.
+     *
+     * @return void
+     */
+    public function test_book_returns_true_when_grade_criterion_met(): void {
+        global $CFG, $DB;
+        $this->resetAfterTest(true);
+        require_once($CFG->libdir . '/completionlib.php');
+        require_once($CFG->libdir . '/gradelib.php');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+
+        // Grade completion criterion: passing grade 50 (out of the course total's 0-100 range).
+        $DB->insert_record('course_completion_criteria', (object)[
+            'course'       => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_GRADE,
+            'gradepass'    => 50.0,
+        ]);
+
+        // One real manual grade item feeding the course total, set via the public grade API.
+        $gradeitem = new \grade_item([
+            'courseid'  => (int)$course->id,
+            'itemtype'  => 'manual',
+            'itemname'  => 'Test manual grade item',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax'  => 100,
+            'grademin'  => 0,
+        ]);
+        $gradeitem->insert();
+        $gradeitem->update_final_grade((int)$user->id, 75.0);
+        grade_regrade_final_grades((int)$course->id);
+
+        $result = completion_booker::book((int)$course->id, (int)$user->id);
+
+        // Consume debugging() calls from external plugin observers on course_completed.
+        $this->resetDebugging();
+
+        $this->assertTrue($result);
+        $freshinfo = new \completion_info($course);
+        $this->assertTrue($freshinfo->is_course_complete((int)$user->id));
+    }
+
+    /**
+     * When a grade criterion exists but the user's course grade is below passing, book() returns false.
+     *
+     * @return void
+     */
+    public function test_book_returns_false_when_grade_criterion_not_met(): void {
+        global $CFG, $DB;
+        $this->resetAfterTest(true);
+        require_once($CFG->libdir . '/completionlib.php');
+        require_once($CFG->libdir . '/gradelib.php');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+
+        $DB->insert_record('course_completion_criteria', (object)[
+            'course'       => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_GRADE,
+            'gradepass'    => 50.0,
+        ]);
+
+        // Same real-item approach as the met test, with a below-threshold grade.
+        $gradeitem = new \grade_item([
+            'courseid'  => (int)$course->id,
+            'itemtype'  => 'manual',
+            'itemname'  => 'Test manual grade item',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax'  => 100,
+            'grademin'  => 0,
+        ]);
+        $gradeitem->insert();
+        $gradeitem->update_final_grade((int)$user->id, 30.0);
+        grade_regrade_final_grades((int)$course->id);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+
+        $freshinfo = new \completion_info($course);
+        $this->assertFalse($freshinfo->is_course_complete((int)$user->id));
+    }
+
+    /**
+     * When a date criterion is configured with a date in the past, book() succeeds.
+     *
+     * completion_criteria_date::review() returns true iff $this->date <= time(). Setting
+     * the date to 2020-01-01 guarantees the criterion is met without clock dependency.
+     *
+     * @return void
+     */
+    public function test_book_returns_true_when_date_criterion_met(): void {
+        global $CFG, $DB;
+        $this->resetAfterTest(true);
+        require_once($CFG->libdir . '/completionlib.php');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+
+        // Date in the past — criterion is satisfied immediately.
+        // completion_criteria_date::review() checks $this->timeend (the field written by the
+        // course completion form and read back by the criterion class); NOT $this->date.
+        $DB->insert_record('course_completion_criteria', (object)[
+            'course'       => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
+            'timeend'      => mktime(0, 0, 0, 1, 1, 2020),
+        ]);
+
+        $result = completion_booker::book((int)$course->id, (int)$user->id);
+
+        // Consume debugging() calls from external plugin observers on course_completed.
+        $this->resetDebugging();
+
+        $this->assertTrue($result);
+        $freshinfo = new \completion_info($course);
+        $this->assertTrue($freshinfo->is_course_complete((int)$user->id));
+    }
+
+    /**
+     * When a date criterion is configured with a date in the future, book() returns false.
+     *
+     * @return void
+     */
+    public function test_book_returns_false_when_date_criterion_not_met(): void {
+        global $CFG, $DB;
+        $this->resetAfterTest(true);
+        require_once($CFG->libdir . '/completionlib.php');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+
+        // Date far in the future — criterion is not yet satisfied (timeend field, same as above).
+        $DB->insert_record('course_completion_criteria', (object)[
+            'course'       => (int)$course->id,
+            'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
+            'timeend'      => mktime(0, 0, 0, 1, 1, 2099),
+        ]);
+
+        $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
+
+        $freshinfo = new \completion_info($course);
+        $this->assertFalse($freshinfo->is_course_complete((int)$user->id));
+    }
+
+    /**
      * When an activity criterion exists but the activity is not complete, book() returns false.
      *
      * @return void

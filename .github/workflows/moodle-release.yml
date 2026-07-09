@@ -56,9 +56,11 @@ jobs:
           # Moodle 5.1 — PHP 8.3 + 8.4, modern DB (MariaDB 11.4 / PostgreSQL 17).
           - { moodle-branch: MOODLE_501_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
           - { moodle-branch: MOODLE_501_STABLE, php: '8.4', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
-          # Moodle 5.2 — PHP 8.4 + 8.5, modern DB.
-          - { moodle-branch: MOODLE_502_STABLE, php: '8.4', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
-          - { moodle-branch: MOODLE_502_STABLE, php: '8.5', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
+          # Moodle 5.2 — PHP 8.3 + 8.4, modern DB.
+          # PHP 8.5 is excluded here too: Moodle 5.2's composer.lock still pins
+          # ezyang/htmlpurifier v4.18.0 and openspout v4.28.5, both capped at PHP 8.4.
+          - { moodle-branch: MOODLE_502_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
+          - { moodle-branch: MOODLE_502_STABLE, php: '8.4', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle, mariadb_image: 'mariadb:11.4', pgsql_image: 'postgres:17' } }
 
     services:
       mariadb:
@@ -67,7 +69,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd "mysqladmin ping --silent"
+          --health-cmd "healthcheck.sh --su=mysql --connect --innodb_initialized"
           --health-interval 10s --health-timeout 5s --health-retries 5
       postgres:
         image: ${{ matrix.db.pgsql_image }}
@@ -134,18 +136,32 @@ jobs:
           MOODLE_BRANCH: ${{ matrix.moodle-branch }}
 
       - name: Initialise PHPUnit environment
-        run: cd moodle && php admin/tool/phpunit/cli/init.php
+        run: |
+          if [ -f moodle/public/admin/tool/phpunit/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/phpunit/cli/init.php)
+          else
+            (cd moodle && php admin/tool/phpunit/cli/init.php)
+          fi
 
       - name: Start PHP built-in web server
         run: |
-          php -S localhost:8000 -t "${{ github.workspace }}/moodle" \
-            > /dev/null 2>&1 &
+          if [ -d "${{ github.workspace }}/moodle/public" ]; then
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle/public" \
+              > /dev/null 2>&1 &
+          else
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle" \
+              > /dev/null 2>&1 &
+          fi
           sleep 2
 
       - name: Initialise Behat environment
         run: |
-          if [ -f moodle/admin/tool/behat/cli/init.php ]; then
-            cd moodle && php admin/tool/behat/cli/init.php
+          if [ -f moodle/public/admin/tool/behat/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/behat/cli/init.php)
+          elif [ -f moodle/admin/tool/behat/cli/init.php ]; then
+            (cd moodle && php admin/tool/behat/cli/init.php)
           fi
 
       - name: PHP Lint

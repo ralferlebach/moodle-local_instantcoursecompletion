@@ -17,8 +17,12 @@
 /**
  * Event fired when this plugin books a course completion.
  *
- * Optional: emitted only when logging is enabled. Lets sites audit which
- * completions were accelerated by this plugin (as opposed to core cron).
+ * Emitted only when logging is enabled (enablelogging setting). Allows sites to
+ * audit which completions were accelerated by this plugin via the standard logstore
+ * — see Site administration > Reports > Accelerated completions.
+ *
+ * objectid = courseid (the course whose completion was booked).
+ * relateduserid = the user whose course completion was booked.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -43,6 +47,7 @@ class completion_booked extends \core\event\base {
     protected function init(): void {
         $this->data['crud'] = 'u';
         $this->data['edulevel'] = self::LEVEL_OTHER;
+        $this->data['objecttable'] = 'course';
     }
 
     /**
@@ -62,5 +67,16 @@ class completion_booked extends \core\event\base {
     public function get_description(): string {
         return "The user with id '{$this->relateduserid}' had a course completion booked " .
             "for the course with id '{$this->courseid}' by local_instantcoursecompletion.";
+    }
+
+    /**
+     * Map objectid to its backup/restore counterpart.
+     *
+     * objectid holds the course id; courses are not remapped during restore.
+     *
+     * @return array
+     */
+    public static function get_objectid_mapping(): array {
+        return ['db' => 'course', 'restore' => self::NOT_MAPPED];
     }
 }

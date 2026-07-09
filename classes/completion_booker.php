@@ -135,16 +135,29 @@ class completion_booker {
     }
 
     /**
-     * Optional debug logging, gated by the enablelogging setting.
+     * Optional logging, gated by the enablelogging setting.
+     *
+     * When outcome is 'booked', also fires a completion_booked event so that the
+     * admin report (Site administration > Reports > Accelerated completions) can
+     * surface accelerated completions from the standard logstore.
      *
      * @param int    $courseid Course ID.
      * @param int    $userid   User ID.
-     * @param string $outcome  Short outcome tag.
+     * @param string $outcome  Short outcome tag ('booked' | 'criteria-not-met' | 'already-complete').
      * @return void
      */
     protected static function log(int $courseid, int $userid, string $outcome): void {
-        if (get_config('local_instantcoursecompletion', 'enablelogging')) {
-            mtrace("local_instantcoursecompletion: course={$courseid} user={$userid} outcome={$outcome}");
+        if (!get_config('local_instantcoursecompletion', 'enablelogging')) {
+            return;
+        }
+        mtrace("local_instantcoursecompletion: course={$courseid} user={$userid} outcome={$outcome}");
+        if ($outcome === 'booked') {
+            $event = event\completion_booked::create([
+                'objectid'      => $courseid,
+                'context'       => \context_course::instance($courseid),
+                'relateduserid' => $userid,
+            ]);
+            $event->trigger();
         }
     }
 }
