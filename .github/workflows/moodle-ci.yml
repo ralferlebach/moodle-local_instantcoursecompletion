@@ -3,8 +3,7 @@
 #
 # Triggered on push / PR to any branch EXCEPT main (dev workflow).
 #
-# Matrix: Moodle 4.5 · 5.0 · 5.1 · 5.2  ×  PHP 8.1 · 8.2 · 8.3  ×  mariadb · pgsql
-#   Note: PHP 8.1 is excluded for all Moodle 5.x branches (minimum PHP 8.2).
+# Matrix: Moodle 4.5 · 5.0  ×  PHP 8.1 · 8.2 · 8.3  ×  mariadb · pgsql
 #
 # The plugin has NO external plugin dependencies. Integration with local_adele
 # is optional and detected at runtime, so nothing extra is installed here.
@@ -143,11 +142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        moodle:
-          - MOODLE_405_STABLE
-          - MOODLE_500_STABLE
-          - MOODLE_501_STABLE
-          - MOODLE_502_STABLE
+        moodle: [MOODLE_405_STABLE, MOODLE_500_STABLE, MOODLE_501_STABLE, MOODLE_502_STABLE]
         php: ['8.1', '8.2', '8.3']
         db:
           - { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root   }
@@ -232,11 +227,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        moodle:
-          - MOODLE_405_STABLE
-          - MOODLE_500_STABLE
-          - MOODLE_501_STABLE
-          - MOODLE_502_STABLE
+        moodle: [MOODLE_405_STABLE, MOODLE_500_STABLE, MOODLE_501_STABLE, MOODLE_502_STABLE]
 
     services:
       mariadb:
@@ -291,7 +282,10 @@ jobs:
           MOODLE_BRANCH: ${{ matrix.moodle }}
 
       - name: Initialise Behat environment
-        run: cd moodle && php admin/tool/behat/cli/init.php
+        run: |
+          if [ -f moodle/admin/tool/behat/cli/init.php ]; then
+            cd moodle && php admin/tool/behat/cli/init.php
+          fi
 
       - name: Behat – plugin scenarios
         run: |

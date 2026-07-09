@@ -138,11 +138,9 @@ phpunit:
 		echo "SKIP: phpunit_dataroot not configured."; \
 		echo "      Add to config.php: \$$CFG->phpunit_dataroot = '...';"; \
 	else \
-		reinit_check=$$(cd $(MOODLE_ROOT) && $(PHP) vendor/bin/phpunit \
-			--testsuite $(PLUGIN_NAME)_testsuite \
-			--testdox 2>&1 | head -5); \
-		if printf '%s\n' "$$reinit_check" | grep -q "initialised for different version"; then \
-			echo "PHPUnit environment outdated — reinitialising..."; \
+		if ! cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/util.php --diag \
+				> /dev/null 2>&1; then \
+			echo "PHPUnit environment uninitialised or outdated — reinitialising..."; \
 			cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/init.php; \
 		fi; \
 		tmpout=$$(mktemp); \

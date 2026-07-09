@@ -8,128 +8,88 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-09
+
+### Added
+- Phase 2 Schritt 2: `reconcile_task::execute()` fully implemented.
+  - `eligible_course_ids()`: for SCOPE_ALL, queries `course_completion_criteria`
+    joined with `course` (enablecompletion=1) directly, since
+    `scope_resolver::get_scope_course_ids()` returns an empty array in that mode.
+    For SCOPE_CATEGORIES/SCOPE_ADELE, uses the cached resolver then filters by
+    completion criteria.
+  - `process_course(int $courseid)`: queries active enrolled users without a
+    timecompleted record via a LEFT JOIN of `user_enrolments`, `enrol`, and
+    `course_completions`; calls `completion_booker::book()` for each; per-user
+    exceptions are caught and logged (DEBUG_DEVELOPER) so a single failure
+    does not abort the pass.
+  - Task is gated by the `reconcile_enabled` config key (off by default) and
+    scheduled at minute 17 of every sixth hour (`17 */6 * * *`).
+- `reconcile_task_test` with three tests:
+  - `test_execute_exits_early_when_disabled` — default-off guard.
+  - `test_execute_books_pending_completions` — criteria pre-satisfied → booked.
+  - `test_execute_skips_users_with_criteria_not_met` — criteria not satisfied
+    → no booking.
+  All tests insert enrolment records directly into `{enrol}` /
+  `{user_enrolments}` to avoid firing `user_enrolment_created` (which would
+  activate other installed plugins' observers under PHPUnit).
+
 ## [0.2.1] - 2026-07-09
 
 ### Added
 - Phase 2: `completion_booker::book()` now performs full course-level aggregation
   and calls `completion_completion::mark_complete()` when all configured criteria
-  are satisfied.  Aggregation mirrors core's `completion_regular_task` logic but is
-  scoped to a single (course, user) pair:
-  - Pass 1 reviews each criterion via `completion_criteria::review()`, marking
-    criterion-level completions in `course_completion_criteria_completion` when met.
-  - Pass 2 re-reads the post-review DB state and evaluates `COMPLETION_AGGREGATION_ALL`
-    or `COMPLETION_AGGREGATION_ANY` per criteria type and across types via
-    `completion_info::get_aggregation_method()`.
-  - On success: `new completion_completion(['userid', 'course'])->mark_complete()`
-    writes `course_completions.timecompleted` and fires `course_completed`, which
-    triggers downstream processes (certificates, local_adele learning-path progress).
-- New integration tests in `completion_booker_test`:
-  - `test_book_returns_true_when_already_complete` — guard 2 (idempotent).
-  - `test_book_returns_true_when_all_criteria_satisfied` — full Phase 2 booking.
-  - `test_book_returns_false_when_criteria_not_met` — aggregation returns false.
-  All tests use direct DB fixture insertion (no enrolment events) to remain
-  independent of other installed plugins' observers under PHPUnit.
+  are satisfied. Pass 1 reviews each criterion; Pass 2 applies ALL/ANY aggregation
+  per criteria type and overall. New log outcomes: `criteria-not-met`, `booked`.
+- Three new integration tests in `completion_booker_test` (guard 2, Phase-2 ×2).
+- Session-document naming convention: `session-NNN.md` (with dash).
+- Blueprint v3.0: §0.1, CI-Matrix table (Kap. 12), Phase-2 status, supported range.
 
-### Fixed (naming)
-- Session document convention: files use `session-NNN.md` (with dash).
-  `docs/sessions/session001.md` from patch-0.2.00 replaced by `session-001.md`.
-  Manual delete required: `docs/sessions/session001.md`, `session-002.md`,
-  `session-003.md` (old sub-session docs; superseded by `session-001.md`).
-- `docs/prompt-templates/sessionstart.txt` and `docs/materials/*.md`: updated
-  session-file references from `session001.md` to `session-001.md` (dash form).
+### Fixed
+- `$plugin->supported` corrected to two-element range `[405, 502]`
+  (Moodle requires exactly `[min, max]`; a four-element list caused a
+  `coding_exception` during PHPUnit environment initialisation).
+- Variable names in `completion_booker.php` changed to remove underscores
+  (`$cached_completions` → `$cachedcompletions`, `$type_satisfied` →
+  `$typesatisfied`, `$all_met` → `$allmet`) — Moodle PHPCS rule
+  `NamingConventions.ValidVariableName`.
 
 ## [0.2.0] - 2026-07-09
 
 ### Changed
-- Bumped plugin release to 0.2.0; version timestamp 2026070901.
-- Extended `$plugin->supported` to `[405, 500, 501, 502]` (Moodle 4.5–5.2).
-- CI dev matrix (`moodle-ci.yml`): added `MOODLE_501_STABLE` and
-  `MOODLE_502_STABLE` to both PHPUnit and Behat jobs; PHP 8.1 excluded for
-  all Moodle 5.x branches.
-- CI release matrix (`moodle-release.yml`): added two include-rows each for
-  Moodle 5.1 (PHP 8.2 + MariaDB, PHP 8.3 + pgsql) and 5.2 (PHP 8.2 + pgsql,
-  PHP 8.3 + MariaDB).
+- Extended `$plugin->supported` to `[405, 500, 501, 502]` (later corrected in 0.2.1).
+- CI dev matrix: added Moodle 5.1 and 5.2; PHP 8.1 excluded for all 5.x.
+- CI release matrix: added include-rows for 5.1 and 5.2.
 
 ### Documentation
-- Session convention established: one Claude chat session = one session document
-  (`docs/sessions/session-NNN.md`). Prior sub-documents 001–003 merged into a
-  single `docs/sessions/session-001.md`; old 002 and 003 deleted.
-- `docs/prompt-templates/sessionstart.txt`: reflects new session convention,
-  version scheme 0.2.x, and Moodle 4.5 / 5.0 / 5.1 / 5.2 matrix.
-- `docs/materials/Lastenheft_Pflichtenheft_Blueprint.md` (v3.0): added §0.1
-  (version convention), updated P8/CI-matrix to include 5.1 and 5.2, added
-  Kap. 11 CI-Matrix table, fixed L-Q2 to "4.5 incl. 5.x bis 5.2".
-- `docs/materials/Blueprint_kompakt.md`: fixed L-Q2 (was incorrectly "4.1–4.5"),
-  updated to "4.5, incl. 5.x (tested: 4.5, 5.0, 5.1, 5.2)"; added
-  session-convention note to status header.
+- Session convention: one Claude chat session = one session document
+  (`docs/sessions/session-NNN.md`). Prior sub-documents merged into
+  `docs/sessions/session-001.md`.
+- `docs/prompt-templates/sessionstart.txt`: reflects new convention and matrix.
+- Blueprint v2.0 → v3.0 (prep).
 
 ## [0.1.1] - 2026-07-08
 
 ### Fixed
-- Language files reordered strictly alphabetically with no interspersed comments
-  (moodle.Files.LangFilesOrdering) — clears all 16 lang warnings.
-- Observer callback PHPDoc: parameters now typed to the concrete event classes
-  (`course_module_completion_updated`, `user_graded`) so documented and actual types
-  match (fixes local_moodlecheck "incomplete parameters list").
-- Unit tests no longer enrol users where enrolment is not needed; observer tests drive
-  `observer::handle_completion_trigger()` directly instead of going through activity
-  completion. This removes the dependency on other installed plugins' event observers
-  (e.g. local_adele), which under PHPUnit raised an unexpected `debugging()` call from
-  `require_phpunit_isolation()` when `user_enrolment_created` fired.
+- Language files reordered strictly alphabetically (16 lang warnings cleared).
+- Observer PHPDoc parameters typed to concrete event classes (moodlecheck).
+- Unit tests no longer trigger enrolment events; observer tests drive
+  `handle_completion_trigger()` directly.
 
 ### Changed
-- `observer::handle_trigger()` is now the public, directly testable
-  `observer::handle_completion_trigger()`; added `observer::reset_seen()` to reset the
-  per-request de-duplication registry (used by tests and long-running CLI).
-- Removed the plugin-level `phpunit.xml` (redundant: Moodle auto-generates the
-  `local_instantcoursecompletion_testsuite` in the root config during test init).
+- `handle_trigger()` → public `handle_completion_trigger()`; added `reset_seen()`.
+- Removed redundant `phpunit.xml`.
 
 ### Added
-- `docs/materials/Lastenheft_Pflichtenheft_Blueprint.md` (extensive) and
-  `docs/materials/Blueprint_kompakt.md`.
-- `docs/prompt-templates/` (sessionstart, sessionende, planning prompt).
+- `docs/materials/` (Blueprint, compact), `docs/prompt-templates/`.
 
 ### Verified
-- Full CI pipeline green: Moodle 4.5 / 5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL
-  (phpcs 0/0, phpdoc, PHPUnit, Behat).
+- Full CI pipeline green: Moodle 4.5/5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL.
 
 ## [0.1.0]
 
 ### Added
-- Initial plugin stub with full infrastructure: installs, upgrades and uninstalls
-  cleanly on Moodle 4.5 and 5.0.
-- Event observers (`db/events.php`, `classes/observer.php`) for
-  `course_module_completion_updated` and `user_graded`, plus scope-cache
-  invalidation observers for course/category/tag changes.
-- `scope_resolver`: three scope modes — all courses, selected category branches
-  (with sub-category resolution and include/exclude tag filters), and delegation
-  to `local_adele` settings when that plugin is present. Resolved course-ID set is
-  cached in a MUC application cache (`db/caches.php`) and invalidated on structural
-  or settings changes.
-- `completion_booker`: guarded wrapper around the core completion API
-  (`completion_info`, criteria `review()`). Follows Lesart A — no new completion
-  logic, only earlier/scoped evaluation of existing criteria.
-- Asynchronous `book_completion_task` (deduplicated ad-hoc task) and an optional,
-  off-by-default `reconcile_task` safety net (`db/tasks.php`).
-- Optional `completion_booked` log event.
-- Admin settings: scope mode, category branches, include/exclude tags, processing
-  mode (async/sync), reconcile toggle, logging toggle. The `local_adele` scope
-  option appears only when `local_adele` is installed.
-- Null privacy provider (the plugin stores no personal data of its own).
-- English and German language strings.
-- PHPUnit tests: scope resolution (all/categories/tags/adele-fallback), observer
-  plumbing (in-scope enqueues one task, out-of-scope enqueues none), booker guards,
-  and privacy provider.
-- Behat scenarios for the settings page.
-- Test data generator (`tests/generator/lib.php`).
-- Makefile mirroring the CI check suite; developer tools (`tools/`).
-- GitHub Actions CI: `moodle-ci.yml` (dev branches) and `moodle-release.yml`
-  (main branch), matrix Moodle 4.5 / 5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL,
-  PHPUnit + Behat, no external plugin dependencies.
-
-### Requirements
-- Moodle 4.5+ (incl. 5.x). No backward compatibility with 4.1–4.4 (per L-Q2).
-
-### Not yet implemented (planned)
-- Phase 2: reconcile_task implementation for date/duration criteria.
-- Optional admin report listing accelerated completions when logging is enabled.
+- Initial plugin stub: event observers, scope resolver (all/categories/adele),
+  completion booker (Phase-1 guard-only stub), async book_completion_task,
+  reconcile_task stub, completion_booked event, null privacy provider, admin
+  settings, English and German lang strings, PHPUnit tests, Behat settings feature,
+  GitHub Actions CI (4.5/5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL).

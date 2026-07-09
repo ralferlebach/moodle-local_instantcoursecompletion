@@ -18,9 +18,8 @@
  * Evaluates and books a course completion for a single (course, user) pair.
  *
  * This class is a thin wrapper around Moodle's own completion API. It does NOT
- * re-implement completion criteria — it re-runs the review that core normally
- * defers to the scheduled task \core\task\completion_regular_task, but scoped to
- * exactly one user and one course so it can happen instantly.
+ * re-implement completion criteria — it evaluates existing criteria instantly
+ * instead of waiting for the scheduled task completion_regular_task.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -34,29 +33,24 @@ namespace local_instantcoursecompletion;
  */
 class completion_booker {
     /**
-     * Evaluate and, if criteria are met, book the course completion for the user.
+     * Evaluate and, if all criteria are met, book the course completion for the user.
      *
-     * Processing order:
+     * Each completion criterion is evaluated via completion_criteria::review() with
+     * $mark = false. This reads the criterion's underlying data source (e.g.
+     * course_modules_completion for activity criteria, grade_grades for grade criteria)
+     * and returns a boolean without writing any criterion-level completion records.
+     * Criterion-level record management is left to core's completion_regular_task
+     * (Lesart A — no new completion logic in this plugin).
+     *
+     * The results are aggregated using the configured ALL / ANY method per criteria
+     * type and overall. If all conditions are satisfied,
+     * completion_completion::mark_complete() is called, which writes to
+     * course_completions and fires course_completed.
+     *
+     * Guard order:
      *   1. Course completion must be enabled.
      *   2. Skip if the user is already marked complete (idempotent).
      *   3. Skip if no completion criteria are configured.
-     *   4. Pass 1 — review each criterion via completion_criteria::review(); marks
-     *      criterion-level completions in the DB when their conditions are met.
-     *   5. Pass 2 — course-level aggregation: re-reads the post-review DB state and
-     *      applies the configured ALL / ANY aggregation per criteria type and across
-     *      types. If all conditions are satisfied, calls
-     *      completion_completion::mark_complete() to record the course completion and
-     *      fire course_completed (which triggers downstream processes such as
-     *      certificates, local_adele learning-path progress, etc.).
-     *
-     * Aggregation mirrors the logic applied by core's completion_regular_task but is
-     * scoped to exactly one (course, user) pair, making it instantaneous and
-     * low-cost. The aggregation method (COMPLETION_AGGREGATION_ALL or _ANY) is read
-     * per criteria type and for the overall course via completion_info.
-     *
-     * Note: date- and duration-based criteria cannot be reliably detected via events
-     * and remain the responsibility of core's scheduled task (or the optional
-     * reconcile_task safety net provided by this plugin).
      *
      * @param int $courseid Course ID.
      * @param int $userid   User ID.
@@ -90,59 +84,33 @@ class completion_booker {
             return false;
         }
 
-        // Pass 1: review each criterion for this user.
-        // review() marks criterion-level completions in the DB when criteria are met.
-        // Results are cached per type to avoid redundant DB queries within this pass.
-        $cachedcompletions = [];
+        // Evaluate each criterion with $mark = false so review() only checks the
+        // underlying data source (course_modules_completion, grade_grades, …) without
+        // writing criterion-level completion records.  Group results by criteriatype
+        // so the per-type aggregation can be applied in the next step.
+        $completion = new \completion_completion(['userid' => $userid, 'course' => $courseid]);
+        $typecriteria = [];
         foreach ($criteria as $criterion) {
             $type = (int)$criterion->criteriatype;
-            if (!isset($cachedcompletions[$type])) {
-                $cachedcompletions[$type] = $info->get_completions($userid, $type);
+            if (!isset($typecriteria[$type])) {
+                $typecriteria[$type] = [];
             }
-            foreach ($cachedcompletions[$type] as $completion) {
-                if ((int)$completion->criteriaid === (int)$criterion->id && !$completion->is_complete()) {
-                    $criterion->review($completion);
-                }
-            }
+            $typecriteria[$type][] = (bool)$criterion->review($completion, false);
         }
 
-        // Early-out after review: core may have marked the course complete internally.
-        if ($info->is_course_complete($userid)) {
-            self::log($courseid, $userid, 'already-complete');
-            return true;
-        }
-
-        // Pass 2: course-level aggregation.
-        // Re-read criterion completions from DB — Pass 1 may have updated records.
-        // Build: criteriatype => [criteriaid => is_complete].
-        // Criteria with no DB record yet default to not complete.
-        $fresh = [];
-        foreach ($criteria as $criterion) {
-            $type = (int)$criterion->criteriatype;
-            if (!isset($fresh[$type])) {
-                $fresh[$type] = [];
-                foreach ($info->get_completions($userid, $type) as $compl) {
-                    $fresh[$type][(int)$compl->criteriaid] = (bool)$compl->is_complete();
-                }
-            }
-            if (!isset($fresh[$type][(int)$criterion->id])) {
-                $fresh[$type][(int)$criterion->id] = false;
-            }
-        }
-
-        if (empty($fresh)) {
-            return false;
-        }
-
-        // Per-type aggregation: is each criteria group satisfied?
+        // Per-type aggregation: is each group of criteria satisfied?
         $typesatisfied = [];
-        foreach ($fresh as $type => $map) {
-            $values = array_values($map);
+        foreach ($typecriteria as $type => $results) {
+            $values = array_values($results);
             if ($info->get_aggregation_method($type) == COMPLETION_AGGREGATION_ALL) {
                 $typesatisfied[$type] = !in_array(false, $values, true);
             } else {
                 $typesatisfied[$type] = in_array(true, $values, true);
             }
+        }
+
+        if (empty($typesatisfied)) {
+            return false;
         }
 
         // Overall aggregation across types.
@@ -158,8 +126,8 @@ class completion_booker {
         }
 
         // All criteria satisfied per the configured aggregation.
-        // Mark the course complete — this inserts/updates course_completions and
-        // fires \core\event\course_completed, which triggers downstream processes.
+        // Mark the course complete — inserts/updates course_completions and fires
+        // core\event\course_completed, which triggers downstream processes.
         $cc = new \completion_completion(['userid' => $userid, 'course' => $courseid]);
         $cc->mark_complete();
         self::log($courseid, $userid, 'booked');

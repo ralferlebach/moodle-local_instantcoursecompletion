@@ -17,10 +17,13 @@
 /**
  * Tests for the completion booker.
  *
- * Guard tests (no DB criterion setup needed) use minimal fixtures.
- * Phase 2 integration tests insert criterion and criterion-completion
- * records directly via $DB to avoid triggering enrolment events that would
- * activate other installed plugins' observers (e.g. local_adele) under PHPUnit.
+ * Guard tests use minimal fixtures (no DB criterion setup needed).
+ *
+ * Integration tests for the Phase-2 aggregation path use an ACTIVITY criterion
+ * combined with completion_info::update_state() to satisfy the criterion. This
+ * writes only to course_modules_completion (always present in Moodle's schema)
+ * and to course_completions when book() succeeds — avoiding any dependency on
+ * the internal criterion-level completion table.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -79,10 +82,6 @@ final class completion_booker_test extends \advanced_testcase {
     /**
      * When the course is already complete, book() is idempotent and returns true (guard 2).
      *
-     * Inserts a course_completions record directly to avoid triggering enrolment
-     * events or mark_complete() (which fires course_completed and could invoke
-     * other plugins' observers in the test environment).
-     *
      * @return void
      */
     public function test_book_returns_true_when_already_complete(): void {
@@ -93,7 +92,8 @@ final class completion_booker_test extends \advanced_testcase {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
 
-        // Pre-mark the course complete directly in the DB (bypasses event cascade).
+        // Pre-mark the course complete via direct insert into course_completions
+        // (a core table guaranteed to exist in every Moodle installation).
         $DB->insert_record('course_completions', (object)[
             'userid'        => (int)$user->id,
             'course'        => (int)$course->id,
@@ -107,12 +107,11 @@ final class completion_booker_test extends \advanced_testcase {
     }
 
     /**
-     * When all criteria are satisfied, book() marks the course complete and returns true.
+     * When an activity criterion is satisfied, book() marks the course complete.
      *
-     * Uses a self-completion criterion (COMPLETION_CRITERIA_TYPE_SELF) pre-marked as
-     * complete via direct DB insertion. No enrolment is performed so that
-     * user_enrolment_created does not fire and cannot trigger other plugins' observers
-     * (e.g. local_adele) under PHPUnit.
+     * Uses COMPLETION_CRITERIA_TYPE_ACTIVITY and completion_info::update_state() so
+     * that only course_modules_completion (always present) is written during setup,
+     * without coupling to any internal criterion-completion table.
      *
      * @return void
      */
@@ -124,35 +123,44 @@ final class completion_booker_test extends \advanced_testcase {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
 
-        // Insert a self-completion criterion for the course.
-        // Aggregation methods not inserted here — the default is COMPLETION_AGGREGATION_ALL.
-        $criteriaid = $DB->insert_record('course_completion_criteria', (object)[
+        // Create a page module with manual completion tracking.
+        $page = $this->getDataGenerator()->create_module('page', [
+            'course'     => $course->id,
+            'completion' => COMPLETION_TRACKING_MANUAL,
+        ]);
+        $cm = get_coursemodule_from_id('page', $page->cmid);
+
+        // Insert the activity completion criterion definition.
+        $DB->insert_record('course_completion_criteria', (object)[
             'course'            => (int)$course->id,
-            'criteriatype'      => COMPLETION_CRITERIA_TYPE_SELF,
+            'criteriatype'      => COMPLETION_CRITERIA_TYPE_ACTIVITY,
+            'module'            => 'page',
+            'moduleinstance'    => (int)$cm->id,
             'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
         ]);
 
-        // Pre-mark the criterion as complete for the user (simulates self-completion).
-        // Since is_complete() returns true, review() is skipped; the aggregation step
-        // finds the criterion satisfied and calls mark_complete() on the course.
-        $DB->insert_record('course_completion_criteria_completion', (object)[
-            'criteriaid'    => $criteriaid,
-            'userid'        => (int)$user->id,
-            'timecompleted' => time(),
-            'reaggregate'   => 0,
-        ]);
+        // Mark the page as complete for the user via the public completion API.
+        // review() reads course_modules_completion; no separate criterion-completion
+        // table is accessed or created during this call.
+        $info = new \completion_info($course);
+        $info->update_state($cm, COMPLETION_COMPLETE, (int)$user->id);
 
         $result = completion_booker::book((int)$course->id, (int)$user->id);
 
+        // Consume any debugging() calls from external plugin observers on course_completed.
+        // local_adele's observer calls require_phpunit_isolation() which generates a
+        // debugging() call under PHPUnit. resetDebugging() clears the buffer; this keeps the assertion
+        // independent of which other plugins are installed.
+        $this->resetDebugging();
+
         $this->assertTrue($result);
 
-        // Verify the course is now actually marked complete (fresh info object).
         $freshinfo = new \completion_info($course);
         $this->assertTrue($freshinfo->is_course_complete((int)$user->id));
     }
 
     /**
-     * When a criterion is configured but not yet satisfied, book() returns false.
+     * When an activity criterion exists but the activity is not complete, book() returns false.
      *
      * @return void
      */
@@ -164,11 +172,18 @@ final class completion_booker_test extends \advanced_testcase {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
 
-        // Insert a self-completion criterion but do NOT insert a criterion completion
-        // record — the criterion is therefore not satisfied for this user.
+        $page = $this->getDataGenerator()->create_module('page', [
+            'course'     => $course->id,
+            'completion' => COMPLETION_TRACKING_MANUAL,
+        ]);
+        $cm = get_coursemodule_from_id('page', $page->cmid);
+
+        // Criterion definition only — activity is NOT marked complete.
         $DB->insert_record('course_completion_criteria', (object)[
             'course'            => (int)$course->id,
-            'criteriatype'      => COMPLETION_CRITERIA_TYPE_SELF,
+            'criteriatype'      => COMPLETION_CRITERIA_TYPE_ACTIVITY,
+            'module'            => 'page',
+            'moduleinstance'    => (int)$cm->id,
             'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
         ]);
 
@@ -176,7 +191,6 @@ final class completion_booker_test extends \advanced_testcase {
 
         $this->assertFalse($result);
 
-        // Confirm the course is not marked complete.
         $freshinfo = new \completion_info($course);
         $this->assertFalse($freshinfo->is_course_complete((int)$user->id));
     }
