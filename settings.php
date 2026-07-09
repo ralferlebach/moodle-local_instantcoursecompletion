@@ -115,6 +115,14 @@ if ($hassiteconfig) {
         0
     ));
 
+    // Report page: accelerated completions visible in logstore.
+    $ADMIN->add('reports', new admin_externalpage(
+        $component . '_report',
+        get_string('report:title', $component),
+        new moodle_url('/local/instantcoursecompletion/report.php'),
+        'moodle/site:config'
+    ));
+
     // Any settings change may alter the resolved scope — purge the cache.
     foreach (['scopemode', 'categories', 'includetags', 'excludetags'] as $name) {
         if (isset($settings->settings->{$name})) {

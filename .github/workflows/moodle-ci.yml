@@ -220,7 +220,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping --silent"
+          --health-cmd="healthcheck.sh --su=mysql --connect --innodb_initialized"
           --health-interval=10s --health-retries=10
       pgsql:
         image: ${{ matrix.db.pgsql_image }}
@@ -307,7 +307,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping --silent"
+          --health-cmd="healthcheck.sh --su=mysql --connect --innodb_initialized"
           --health-interval=10s --health-retries=10
       selenium:
         image: selenium/standalone-chrome:latest
@@ -364,14 +364,25 @@ jobs:
 
       - name: Start PHP built-in web server
         run: |
-          php -S localhost:8000 -t "${{ github.workspace }}/moodle" \
-            > /dev/null 2>&1 &
+          # Moodle 5.x serves from moodle/public/; earlier versions from moodle/.
+          if [ -d "${{ github.workspace }}/moodle/public" ]; then
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle/public" \
+              > /dev/null 2>&1 &
+          else
+            php -S localhost:8000 \
+              -t "${{ github.workspace }}/moodle" \
+              > /dev/null 2>&1 &
+          fi
           sleep 2
 
       - name: Initialise Behat environment
         run: |
-          if [ -f moodle/admin/tool/behat/cli/init.php ]; then
-            cd moodle && php admin/tool/behat/cli/init.php
+          # moodle-plugin-ci places admin/ under public/ for Moodle 5.x.
+          if [ -f moodle/public/admin/tool/behat/cli/init.php ]; then
+            (cd moodle/public && php admin/tool/behat/cli/init.php)
+          elif [ -f moodle/admin/tool/behat/cli/init.php ]; then
+            (cd moodle && php admin/tool/behat/cli/init.php)
           fi
 
       - name: Behat – plugin scenarios
