@@ -27,8 +27,11 @@
 
 namespace local_instantcoursecompletion;
 
-use local_instantcoursecompletion\task\book_due_completion_task;
 use local_instantcoursecompletion\task\discover_due_criteria_task;
+
+defined('MOODLE_INTERNAL') || die();
+
+require_once(__DIR__ . '/fixtures/due_criteria_test_trait.php');
 
 /**
  * Discovery task tests.
@@ -37,6 +40,8 @@ use local_instantcoursecompletion\task\discover_due_criteria_task;
  * @covers \local_instantcoursecompletion\task\book_due_completion_task
  */
 final class discover_due_criteria_task_test extends \advanced_testcase {
+    use due_criteria_test_trait;
+
     /**
      * Load completionlib, reset state and enable scheduling.
      *
@@ -51,91 +56,6 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
         set_config('schedulingenabled', 1, 'local_instantcoursecompletion');
         set_config('schedulinghorizon', WEEKSECS, 'local_instantcoursecompletion');
         set_config('maxtasksperrun', 5000, 'local_instantcoursecompletion');
-    }
-
-    /**
-     * Ad-hoc due-booking tasks currently queued.
-     *
-     * @return \core\task\adhoc_task[]
-     */
-    protected function queued_tasks(): array {
-        return \core\task\manager::get_adhoc_tasks(book_due_completion_task::class);
-    }
-
-    /**
-     * Insert an active manual enrolment without firing user_enrolment_created.
-     *
-     * @param \stdClass $course      Course record.
-     * @param \stdClass $user        User record.
-     * @param int       $timestart   Enrolment start, 0 for none.
-     * @param int       $timecreated Enrolment creation time.
-     * @param int       $timeend     Enrolment end, 0 for none.
-     * @return void
-     */
-    protected function enrol_user_direct(
-        \stdClass $course,
-        \stdClass $user,
-        int $timestart = 0,
-        int $timecreated = 0,
-        int $timeend = 0
-    ): void {
-        global $DB;
-
-        $timecreated = $timecreated ?: time();
-        $enrolrec = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual']);
-        $enrolid = $enrolrec ? (int)$enrolrec->id : $DB->insert_record('enrol', (object)[
-            'enrol' => 'manual',
-            'courseid' => (int)$course->id,
-            'status' => 0,
-            'sortorder' => 0,
-            'timecreated' => $timecreated,
-            'timemodified' => $timecreated,
-        ]);
-
-        $DB->insert_record('user_enrolments', (object)[
-            'enrolid' => $enrolid,
-            'userid' => (int)$user->id,
-            'status' => 0,
-            'timestart' => $timestart,
-            'timeend' => $timeend,
-            'modifierid' => 0,
-            'timecreated' => $timecreated,
-            'timemodified' => $timecreated,
-        ]);
-    }
-
-    /**
-     * Add a date criterion to a course.
-     *
-     * @param \stdClass $course  The course.
-     * @param int       $timeend When the criterion falls due.
-     * @return int The criterion ID.
-     */
-    protected function add_date_criterion(\stdClass $course, int $timeend): int {
-        global $DB;
-
-        return (int)$DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_DATE,
-            'timeend' => $timeend,
-        ]);
-    }
-
-    /**
-     * Add a duration criterion to a course.
-     *
-     * @param \stdClass $course      The course.
-     * @param int       $enrolperiod Seconds since enrolment required.
-     * @return int The criterion ID.
-     */
-    protected function add_duration_criterion(\stdClass $course, int $enrolperiod): int {
-        global $DB;
-
-        return (int)$DB->insert_record('course_completion_criteria', (object)[
-            'course' => (int)$course->id,
-            'criteriatype' => COMPLETION_CRITERIA_TYPE_DURATION,
-            'enrolperiod' => $enrolperiod,
-        ]);
     }
 
     /**
@@ -224,21 +144,11 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
      * @return void
      */
     public function test_completed_user_is_not_planned(): void {
-        global $DB;
-
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
         $this->add_date_criterion($course, time() + DAYSECS);
         $this->enrol_user_direct($course, $user);
-
-        $DB->insert_record('course_completions', (object)[
-            'userid' => (int)$user->id,
-            'course' => (int)$course->id,
-            'timeenrolled' => 0,
-            'timestarted' => 0,
-            'timecompleted' => time() - 10,
-            'reaggregate' => 0,
-        ]);
+        $this->mark_course_completed($course, $user);
 
         (new discover_due_criteria_task())->execute();
 
@@ -344,13 +254,7 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
         $criterionid = $this->add_date_criterion($course, time() + DAYSECS);
         $this->enrol_user_direct($course, $user);
 
-        $criterioncompletion = new \completion_criteria_completion([
-            'course' => (int)$course->id,
-            'userid' => (int)$user->id,
-            'criteriaid' => $criterionid,
-        ]);
-        $criterioncompletion->mark_complete();
-        $this->resetDebugging();
+        $this->mark_criterion_completed($course, $user, $criterionid);
 
         (new discover_due_criteria_task())->execute();
 
@@ -363,15 +267,12 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
      * @return void
      */
     public function test_out_of_scope_course_is_not_planned(): void {
-        $category = $this->getDataGenerator()->create_category();
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
         $this->add_date_criterion($course, time() + DAYSECS);
         $this->enrol_user_direct($course, $user);
 
-        set_config('scopemode', scope_resolver::SCOPE_CATEGORIES, 'local_instantcoursecompletion');
-        set_config('categories', (string)$category->id, 'local_instantcoursecompletion');
-        scope_resolver::purge_cache();
+        $this->restrict_scope_to_new_category();
 
         (new discover_due_criteria_task())->execute();
 

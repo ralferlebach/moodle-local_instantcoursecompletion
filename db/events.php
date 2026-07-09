@@ -48,6 +48,16 @@ $observers = [
         'internal' => false,
     ],
     [
+        'eventname' => '\core\event\user_enrolment_created',
+        'callback' => '\local_instantcoursecompletion\observer::user_enrolment_created',
+        'internal' => false,
+    ],
+    [
+        'eventname' => '\core\event\user_enrolment_updated',
+        'callback' => '\local_instantcoursecompletion\observer::user_enrolment_updated',
+        'internal' => false,
+    ],
+    [
         'eventname' => '\core\event\course_completion_updated',
         'callback' => '\local_instantcoursecompletion\observer::invalidate_criteria_index',
         'internal' => false,

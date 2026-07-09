@@ -139,35 +139,18 @@ class completion_booker {
     /**
      * The moment a duration criterion becomes satisfied for a user.
      *
-     * completion_criteria_duration::review() reads ue.timestart only and therefore
-     * never completes users whose enrolment carries no start date. The criterion's own
-     * cron falls back to ue.timecreated in that case; this reproduces the cron rule so
-     * that both code paths agree. The earliest enrolment wins, as it does in cron.
-     *
      * @param \completion_criteria $criterion The duration criterion.
      * @param int                  $userid    User ID.
      * @return int|null Timestamp, or null when the user has no usable enrolment.
      */
     protected static function duration_due_time(\completion_criteria $criterion, int $userid): ?int {
-        global $DB;
-
         $enrolperiod = (int)$criterion->enrolperiod;
         if ($enrolperiod <= 0) {
             return null;
         }
 
-        $timeenrolled = $DB->get_field_sql(
-            "SELECT MIN(CASE WHEN ue.timestart > 0 THEN ue.timestart ELSE ue.timecreated END)
-               FROM {user_enrolments} ue
-               JOIN {enrol} e ON e.id = ue.enrolid
-              WHERE e.courseid = :courseid AND ue.userid = :userid",
-            ['courseid' => (int)$criterion->course, 'userid' => $userid]
-        );
-
-        if (empty($timeenrolled)) {
-            return null;
-        }
-        return (int)$timeenrolled + $enrolperiod;
+        $timeenrolled = due_scheduler::time_enrolled((int)$criterion->course, $userid);
+        return $timeenrolled === null ? null : $timeenrolled + $enrolperiod;
     }
 
     /**

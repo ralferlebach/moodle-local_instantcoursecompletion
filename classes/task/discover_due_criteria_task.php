@@ -24,6 +24,7 @@
 
 namespace local_instantcoursecompletion\task;
 
+use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
 /**
@@ -38,9 +39,6 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
-
-    /** @var int Seconds over which bookings due at the same instant are spread. */
-    protected const JITTER_WINDOW = 900;
 
     /** @var int Upper bound on the pending tasks pre-loaded for de-duplication. */
     protected const MAX_PENDING_PREFETCH = 50000;
@@ -73,14 +71,14 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     public function execute(): void {
         global $CFG;
 
-        if (!get_config(self::COMPONENT, 'schedulingenabled')) {
+        if (!due_scheduler::enabled()) {
             return;
         }
         require_once($CFG->libdir . '/completionlib.php');
 
         $now = time();
-        $horizon = $now + self::horizon_seconds();
-        $budget = self::max_tasks_per_run();
+        $horizon = $now + due_scheduler::horizon_seconds();
+        $budget = due_scheduler::max_tasks_per_run();
         $logging = (bool)get_config(self::COMPONENT, 'enablelogging');
 
         $courseids = $this->eligible_course_ids((int)get_config(self::COMPONENT, self::CURSOR), $horizon);
@@ -130,29 +128,6 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     }
 
     /**
-     * How far ahead bookings are planned.
-     *
-     * The horizon bounds the number of rows this task can add to the ad-hoc queue.
-     * It has to exceed the interval between two runs, or due times pass unplanned.
-     *
-     * @return int Seconds.
-     */
-    protected static function horizon_seconds(): int {
-        $horizon = (int)get_config(self::COMPONENT, 'schedulinghorizon');
-        return $horizon > 0 ? $horizon : WEEKSECS;
-    }
-
-    /**
-     * Upper bound on the ad-hoc tasks queued in one run.
-     *
-     * @return int
-     */
-    protected static function max_tasks_per_run(): int {
-        $max = (int)get_config(self::COMPONENT, 'maxtasksperrun');
-        return $max > 0 ? $max : 5000;
-    }
-
-    /**
      * Persist the cursor position.
      *
      * @param int $courseid Last fully processed course ID, or 0 to restart.
@@ -184,7 +159,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             [
                 'classname' => '\\' . book_due_completion_task::class,
                 'component' => self::COMPONENT,
-                'latest' => $horizon + self::JITTER_WINDOW,
+                'latest' => $horizon + due_scheduler::JITTER_WINDOW,
             ],
             0,
             self::MAX_PENDING_PREFETCH
@@ -236,20 +211,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * @return int Number of tasks queued.
      */
     protected function schedule_course(int $courseid, int $now, int $horizon, int $budget): int {
-        global $DB;
-
-        [$typesql, $params] = $DB->get_in_or_equal(
-            [COMPLETION_CRITERIA_TYPE_DATE, COMPLETION_CRITERIA_TYPE_DURATION],
-            SQL_PARAMS_NAMED,
-            'ct'
-        );
-        $params['course'] = $courseid;
-        $criteria = $DB->get_records_select(
-            'course_completion_criteria',
-            "course = :course AND criteriatype $typesql",
-            $params,
-            'id ASC'
-        );
+        $criteria = due_scheduler::time_criteria($courseid);
 
         $queued = 0;
         foreach ($criteria as $criterion) {
@@ -373,12 +335,6 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     /**
      * Queue one booking task unless an identical one is already pending.
      *
-     * The custom data is the de-duplication key, compared as a string by
-     * \core\task\manager, so its keys are written in a fixed order. Bookings that fall
-     * due at the same instant are spread over a window, to keep a single cron run from
-     * having to process a whole cohort at once; the jitter is deterministic and stays
-     * out of the key.
-     *
      * @param int $courseid Course ID.
      * @param int $userid   User ID.
      * @param int $duetime  Time the criterion falls due.
@@ -386,28 +342,15 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * @return bool Whether a task was queued.
      */
     protected function queue_due_task(int $courseid, int $userid, int $duetime, int $now): bool {
-        $customdata = (object)[
-            'courseid' => $courseid,
-            'duetime' => $duetime,
-            'userid' => $userid,
-        ];
-        $key = json_encode($customdata);
-
-        if (isset($this->pending[$key])) {
-            return false;
-        }
-
-        $task = new book_due_completion_task();
-        $task->set_custom_data($customdata);
-        $task->set_next_run_time(max($now, $duetime) + ($userid % self::JITTER_WINDOW));
-
         // With an incomplete prefetch the queue itself has to be asked, at the cost of
-        // one query per enqueue. queue_adhoc_task() returns false when it finds a twin.
-        if (\core\task\manager::queue_adhoc_task($task, !$this->prefetchcomplete) === false) {
-            return false;
-        }
-        $this->pending[$key] = true;
-
-        return true;
+        // one query per enqueue.
+        return due_scheduler::queue(
+            $courseid,
+            $userid,
+            $duetime,
+            $now,
+            $this->pending,
+            !$this->prefetchcomplete
+        );
     }
 }

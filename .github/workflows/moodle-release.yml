@@ -81,16 +81,6 @@ jobs:
         options: >-
           --health-cmd pg_isready
           --health-interval 10s --health-timeout 5s --health-retries 3
-      selenium:
-        image: selenium/standalone-chrome:latest
-        options: >-
-          --shm-size=2gb
-          --health-cmd="curl -fsSL http://localhost:4444/status"
-          --health-interval=15s
-          --health-timeout=30s
-          --health-retries=5
-        ports:
-          - 4444:4444
 
     steps:
       - name: Checkout plugin
@@ -143,18 +133,41 @@ jobs:
             (cd moodle && php admin/tool/phpunit/cli/init.php)
           fi
 
+      - name: Start Selenium on the host network
+        run: |
+          # Chrome must reach the site at the same address the PHP side uses.
+          # A GHA service container sits on its own bridge network, where
+          # localhost:8000 is the container itself, so host networking is required.
+          docker pull selenium/standalone-chrome:latest
+          docker run -d --name selenium \
+            --network host \
+            --shm-size=2g \
+            selenium/standalone-chrome:latest
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:4444/status; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS -o /dev/null http://localhost:4444/status
+
       - name: Start PHP built-in web server
         run: |
           if [ -d "${{ github.workspace }}/moodle/public" ]; then
-            php -S localhost:8000 \
+            php -S 0.0.0.0:8000 \
               -t "${{ github.workspace }}/moodle/public" \
               > /dev/null 2>&1 &
           else
-            php -S localhost:8000 \
+            php -S 0.0.0.0:8000 \
               -t "${{ github.workspace }}/moodle" \
               > /dev/null 2>&1 &
           fi
-          sleep 2
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:8000/; then
+              break
+            fi
+            sleep 1
+          done
 
       - name: Initialise Behat environment
         run: |

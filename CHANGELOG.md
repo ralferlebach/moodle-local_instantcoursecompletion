@@ -8,6 +8,87 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-09
+
+Ereignisgesteuerte Sofortplanung (ursprünglich für 1.1 vorgesehen), CI-Fix für die
+Behat-JavaScript-Szenarien, phpcs-Warnung in `db/upgrade.php`.
+
+### Added
+
+- **`due_scheduler`** (neu): gemeinsame Planungslogik für zeitbasierte Kriterien.
+  `discover_due_criteria_task` und die Observer nutzen jetzt dieselbe Klasse.
+- **Observer auf `user_enrolment_created` und `user_enrolment_updated`.** Eine neue
+  Einschreibung legt den Fälligkeitszeitpunkt eines Dauer-Kriteriums fest, ein
+  geändertes Startdatum verschiebt ihn. Beides wird sofort geplant, statt bis zum
+  nächsten stündlichen Discovery-Lauf zu warten. Der Discovery-Task wird damit zum
+  Recovery-Mechanismus für verpasste Events, gelöschte Tasks und Restores.
+- `due_scheduler::schedule_user()` prüft vorab über den gecachten Kriterien-Index, ob
+  der Kurs überhaupt ein Datums- oder Dauer-Kriterium besitzt, und danach Scope,
+  aktive Einschreibung (`is_enrolled(..., $onlyactive = true)`), bereits erfolgten
+  Kursabschluss und bereits verbuchte Kriteriums-Datensätze.
+
+### Changed — DRY
+
+- `JITTER_WINDOW`, `horizon_seconds()`, `max_tasks_per_run()`, `time_criteria()` und
+  `queue()` sind aus `discover_due_criteria_task` nach `due_scheduler` gewandert.
+  Der Task hält nur noch das, was ihn vom Observer unterscheidet: Cursor, Budget,
+  Vorab-Hashset.
+- `completion_booker::duration_due_time()` nutzt `due_scheduler::time_enrolled()`
+  statt einer eigenen Kopie derselben Abfrage.
+
+### Fixed — CI
+
+- **Behat-`@javascript`-Szenarien schlugen fehl** (`net::ERR_CONNECTION_REFUSED`).
+  Ursache: `php -S localhost:8000` bindet nur an `127.0.0.1` des Runners, während
+  Selenium als GitHub-Actions-Service in einem eigenen Bridge-Netz lief — dort ist
+  `localhost` der Container selbst. Die fünf Nicht-JavaScript-Szenarien laufen im
+  PHP-internen BrowserKit-Treiber und berührten Chrome nie, daher blieb der Defekt
+  bis zur Einführung der ersten `@javascript`-Szenarien in 0.4.4 unentdeckt.
+  Behoben in `moodle-ci.yml` und `moodle-release.yml`: Selenium wird nicht mehr als
+  Service, sondern per `docker run --network host` gestartet, mit Vorab-Pull und
+  Health-Wait. Der Webserver bindet an `0.0.0.0:8000`, und der Start wird mit einer
+  echten HTTP-Abfrage abgewartet statt mit `sleep 2`.
+
+### Fixed — Coding standard
+
+- `db/upgrade.php`: `defined('MOODLE_INTERNAL') || die();` entfernt. Die Datei enthält
+  ausschliesslich eine Funktionsdefinition, also keine Side Effects; `moodle-phpcs`
+  meldet den Guard dort korrekt als überflüssig.
+
+### Added — Tests
+
+- `due_scheduler`: Datums- und Dauer-Kriterium, beide zusammen, Horizont, Setting,
+  Kurs ohne Zeitkriterien, fehlende und abgelaufene Einschreibung, Wirkungsbereich,
+  bereits abgeschlossener Kurs, bereits verbuchtes Kriterium, Idempotenz,
+  `time_enrolled()` mit und ohne `timestart`.
+- **`tests/fixtures/due_criteria_test_trait.php`** (neu): gemeinsame Fixtures für die
+  beiden Tests rund um zeitbasierte Kriterien.
+
+### Fixed (kein Versions-Increment, iterativ in dieser Session)
+
+- **PHPUnit-Fehler `Only variables should be passed by reference`.**
+  `reset($this->queued_tasks())` reicht einen Rückgabewert an einen
+  Referenzparameter. Ersetzt durch `single_queued_task()`, das die Liste in eine
+  Variable holt und dabei gleich die Anzahl prüft.
+- **phpcpd: 63 duplizierte Zeilen** zwischen `discover_due_criteria_task_test` und
+  `due_scheduler_test`. Die gemeinsamen Fixtures (`queued_tasks()`,
+  `enrol_user_direct()`, `add_date_criterion()`, `add_duration_criterion()`) sind in
+  den neuen Trait gewandert, ebenso drei weitere Blöcke, die beim Nachmessen auffielen:
+  `mark_course_completed()`, `mark_criterion_completed()` und
+  `restrict_scope_to_new_category()`. Längster verbleibender identischer Block: sechs
+  Zeilen mit 36 Tokens, deutlich unter der Schwelle von 70.
+- **phpcs-Warnung** in `due_scheduler.php`: Inline-Kommentar begann kleingeschrieben
+  mit dem Funktionsnamen `queue_adhoc_task()`. Umformuliert.
+- **phpcs-Fehler** in beiden Due-Tests: das neue `require_once` der Fixture-Datei ist
+  eine Änderung des globalen Zustands und verlangt daher einen
+  `defined('MOODLE_INTERNAL') || die();`-Guard. Ergänzt in der von Moodle Core
+  verwendeten Reihenfolge `namespace` → `use` → `defined` → `require_once`. Der Trait
+  selbst definiert nur eine Klasse und bleibt korrekt ohne Guard.
+
+### Offen
+
+- Freigabe für `MATURITY_STABLE` / 1.0.0 steht aus.
+
 ## [0.4.5] - 2026-07-09
 
 Entfernt den Synchron-Modus und schliesst die letzte Testlücke im `adele`-Pfad.

@@ -88,6 +88,48 @@ class observer {
     }
 
     /**
+     * Plan due bookings for a newly enrolled user.
+     *
+     * @param \core\event\user_enrolment_created $event The triggering event.
+     * @return void
+     */
+    public static function user_enrolment_created(\core\event\user_enrolment_created $event): void {
+        self::schedule_due_bookings((int)$event->courseid, (int)$event->relateduserid);
+    }
+
+    /**
+     * Re-plan due bookings after an enrolment changed.
+     *
+     * A changed start date moves the due time of a duration criterion. The task planned
+     * for the old due time stays queued and ends without effect, because it re-evaluates
+     * the criteria rather than trusting its own custom data.
+     *
+     * @param \core\event\user_enrolment_updated $event The triggering event.
+     * @return void
+     */
+    public static function user_enrolment_updated(\core\event\user_enrolment_updated $event): void {
+        self::schedule_due_bookings((int)$event->courseid, (int)$event->relateduserid);
+    }
+
+    /**
+     * Plan the time-based bookings of one user, swallowing any failure.
+     *
+     * @param int $courseid Affected course ID.
+     * @param int $userid   Affected user ID.
+     * @return void
+     */
+    protected static function schedule_due_bookings(int $courseid, int $userid): void {
+        try {
+            due_scheduler::schedule_user($courseid, $userid);
+        } catch (\Throwable $e) {
+            debugging(
+                'local_instantcoursecompletion: due scheduling failed: ' . $e->getMessage(),
+                DEBUG_DEVELOPER
+            );
+        }
+    }
+
+    /**
      * Purge both scope caches after a category tree or tag change.
      *
      * @param \core\event\base $event The triggering event.
