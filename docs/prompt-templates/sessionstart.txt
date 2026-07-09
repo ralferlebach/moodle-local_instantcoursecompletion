@@ -16,13 +16,14 @@ Das aktuelle Dokument liegt im Plugin-Repo:
 
 ### B) Kontext-Dokument der letzten Sitzung
 
-Das aktuelle Session-Dokument (sessionende der Vorsitzung) ist im Anhang
-zu finden. Ältere Session-Dokumente zwecks Referenz: docs/sessions/
+Das aktuelle Kontext-Dokument (sessionende der Vorsitzung) ist im Anhang
+zu finden. Ältere Kontext-Dokumente zwecks Referenz: docs/sessions/
 
-**Session-Konvention (verbindlich):**
+Session-Konvention (verbindlich):
   Ein Claude-Chat = genau eine Session. Session-Dokumente sind fortlaufend
-  nummeriert (session001.md, session002.md, ...). Pro Chat wird am Ende
-  ein Dokument nach der sessionende-Vorlage geschrieben und abgelegt.
+  nummeriert mit Bindestrich: session-001.md, session-002.md, ...
+  Jede Session hat genau eine Datei; Sub-Dokumente werden nach der Session
+  in eine einzige Datei zusammengeführt.
 
 ---
 
@@ -32,7 +33,7 @@ Der aktuelle Plugin-Stand liegt als Patch-ZIP im Anhang, einzuspielen
 in die Moodle-Installation unter local/instantcoursecompletion/.
 
 Moodle-Installation: moodle45_aliseadele
-PHP: >= 8.1 (Moodle 4.5) bzw. >= 8.2 (Moodle 5.0+)
+PHP: >= 8.1 (Moodle 4.5) bzw. >= 8.2 (Moodle 5.x)
 Moodle: >= 4.5 (2024100700); getestet: 4.5, 5.0, 5.1, 5.2.
 KEINE Abwärtskompatibilität < 4.5.
 
@@ -44,44 +45,39 @@ Haupt-Dependencies:
 
 ### D) Aktueller Entwicklungsstand
 
-**Version:** 0.2.0 (2026070901) — Stub mit voller Infrastruktur, CI grün auf
-Moodle 4.5 / 5.0 / 5.1 / 5.2.
+**Version:** 0.2.1 (2026070902) — Phase 2 Kursebenen-Aggregation implementiert.
 
-**Versions-Konvention dieser Sitzung (verbindlich):**
-  Format: 0.MAJOR.MINOR, wobei MINOR pro Iteration hochzählt (0.2.0, 0.2.1, ...).
-  Reine Fixes (linting, unit-test, behat-failures) erhalten kein eigenes MINOR-
-  Increment — sie werden als Teil der laufenden Iteration ausgeliefert.
-  Die Versionsnummer in version.php hat das Format YYYYMMDDNN (z. B. 2026070901).
-  Patch-ZIPs heißen patch-0.MAJOR.MINOR.zip.
+**Versions-Konvention Session 002 (0.2.x):**
+  MINOR-Increment pro Iterations-Patch; reine Fixes (linting/unit/behat) kein
+  eigenes Increment.
 
 **Grundsatz (nicht ohne explizite Diskussion ändern):**
   Lesart A — KEINE eigene Abschlusslogik. Das Plugin wertet vorhandene Moodle-
-  Completion-Kriterien nur früher und eingegrenzt aus (Observer -> Scope -> Kern-API).
+  Completion-Kriterien nur früher und eingegrenzt aus (Observer → Scope → Kern-API).
 
-**Zuletzt abgeschlossen (Session 001):**
-  - Vollständiger Plugin-Stub mit Infrastruktur angelegt (v0.1.0 → v0.1.1)
-  - CI vollständig grün (Moodle 4.5/5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL)
-  - Lint-Fixes: Lang-Dateien alphabetisch, keine Kommentar-Trennzeilen
-  - PHPDoc: Observer-Parameter auf konkrete Event-Typen gehoben (moodlecheck)
-  - Unit-Test-Ursache behoben: Trigger-Logik direkt testbar
-    (observer::handle_completion_trigger) statt Umweg über Einschreibung/Aktivität
-  - phpunit.xml entfernt (redundant; Moodle generiert die Testsuite selbst)
-  - Vollständige Dokumentation: docs/materials, docs/prompt-templates
-  - Session-Konvention etabliert (1 Chat = 1 Session-Dokument)
-  - Moodle-Versionsmatrix auf 4.5 / 5.0 / 5.1 / 5.2 erweitert
+**Zuletzt abgeschlossen (Session 002):**
+  - CI-Matrix auf Moodle 4.5 / 5.0 / 5.1 / 5.2 erweitert
+  - Session-Konvention etabliert (1 Chat = 1 Session-Dokument, session-NNN.md)
+  - Phase 2: completion_booker::book() implementiert
+      * Pass 1: criterion::review() je Kriterium (markiert Kriterium-Completions)
+      * Pass 2: Aggregation ALL/ANY je Kriteriumstyp und gesamt
+      * mark_complete() via new completion_completion(['userid','course'])
+      * Outcomes: already-complete, criteria-not-met, booked
+  - Neue Integrationstests (3 Tests):
+      * test_book_returns_true_when_already_complete (Guard 2)
+      * test_book_returns_true_when_all_criteria_satisfied (Phase-2-Integration)
+      * test_book_returns_false_when_criteria_not_met (Phase-2-Integration)
+  - Naming-Fix: session001.md → session-001.md (Bindestrich-Konvention)
 
 **Als nächstes geplant:**
-  Phase 2 — Kursebenen-Aggregation und Verbuchung in completion_booker::book():
-    - completion_completion::mark_complete() nach erfüllter Aggregation
-    - Aggregationsregeln (ALL/ANY, je Kriteriumstyp) exakt wie Kern spiegeln
-    - Versionsspezifische Integrationstests (4.5, 5.0, 5.1, 5.2)
-  Phase 2 — reconcile_task für datums-/dauerbasierte Kriterien.
+  Phase 2 Schritt 2 — reconcile_task für datums-/dauerbasierte Kriterien.
+  Optional: Admin-Report beschleunigter Abschlüsse (bei aktivem Logging).
 
 ---
 
 ### E) Ziel dieser Sitzung
 
-Wir knüpfen an die Arbeiten an, die im aktuellen Session-Dokument
+Wir knüpfen an die Arbeiten an, die im aktuellen Kontext-Dokument
 und in der angehängten Code-Base vorliegen, und gehen, wenn der letzte
 Arbeitsschritt als vollumfänglich erfüllt angesehen wird, zum nächsten
 vorgesehenen Schritt in der Umsetzung über.
@@ -98,8 +94,8 @@ Schlüssel-Entwurfsentscheidungen (nicht verändern ohne explizite Diskussion):
   5. Dedup pro (courseid,userid) je Request; queue_adhoc_task($task, true).
   6. Privacy: null_provider (kein eigener personenbezogener Datenbestand).
   7. Keine harte local_adele-Dependency; eigenständig lauffähig.
-  8. CI ohne Fremd-Plugins (--no-init + manuelles init.php);
-     Matrix 4.5 / 5.0 / 5.1 / 5.2.
+  8. CI ohne Fremd-Plugins (--no-init + manuelles init.php); Matrix
+     4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3 (PHP 8.1 nur auf 4.5).
 
 Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
   - Lang-Dateien: alphabetisch sortiert, keine Kommentar-Trennzeilen
@@ -115,18 +111,20 @@ Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
     Plugin-Observer (z. B. local_adele) können unter PHPUnit debugging() auslösen
   - Statische Dedup-Register in Tests via reset_seen()/setUp zurücksetzen
     (DB-IDs werden von resetAfterTest zurückgesetzt, Statics nicht)
+  - Tests für completion_booker: direkte DB-Fixture-Insertion statt enrol_user()
+    (vermeidet user_enrolment_created → local_adele-Observer-Problem)
 
 ---
 
 ### F) Modus zur Delivery
 
 - Code-Changes immer ausliefern als Patch-ZIP: eine ZIP-Datei, die NUR
-  die geänderten Dateien enthält (kein .git-Ordner, keine docs/-Dateien)
-  Ausnahme: Patches, die explizit Dokumentations-Updates enthalten, dürfen docs/-
-  Dateien einschließen — dies ist dann im Patch-Namen kenntlich zu machen.
+  die geänderten Dateien enthält (kein .git-Ordner)
 - Patch-ZIPs erhalten einen durchnummerierten Namen (patch-0.X.YY.zip),
   die Version in version.php orientiert sich am aktuellen Datum und wird
-  mit jeder Iteration hochgezählt (Format: YYYYMMDDNN, z.B. 2026070901)
+  mit jeder Iteration hochgezählt (Format: YYYYMMDDNN, z.B. 2026070902)
+- Versions-Konvention Session 002 (0.2.x):
+    MINOR-Increment pro Iterations-Patch; reine Fixes kein eigenes Increment
 - Zu jeder Änderung eine einzeilige Kurzbeschreibung des Commits (englisch)
   sowie bis zu 5 Stichpunkte zu den vorgenommenen Änderungen.
   Diese Angaben als MD-Code DIREKT UNTER dem Download-Link der Patch-ZIP
@@ -149,7 +147,7 @@ Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
   grundsätzlich nur im Chat-Fenster ausgeliefert, nie als Download!
 
 Bevor du beginnst:
-1. Bestätige kurz, was du aus dem Session-Dokument und den
+1. Bestätige kurz, was du aus dem Kontext-Dokument und den
    Dateien verstanden hast.
 2. Benenne, falls vorhanden, Widersprüche oder fehlende
    Informationen, die du für die heutige Aufgabe brauchst.

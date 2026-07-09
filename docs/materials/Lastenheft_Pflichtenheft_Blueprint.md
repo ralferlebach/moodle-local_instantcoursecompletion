@@ -1,9 +1,9 @@
 # Lastenheft · Pflichtenheft · Technisches Blueprint
 
 **Plugin:** `local_instantcoursecompletion` — „Sofortiger Kursabschluss"
-**Zielplattform:** Moodle **4.5+** (inkl. 5.x bis 5.2) · PHP 8.1+ (8.2+ auf Moodle 5.0+)
+**Zielplattform:** Moodle **4.5+** (inkl. 5.x bis 5.2) · PHP 8.1+ (8.2+ auf Moodle 5.x)
 **Autor / Lizenz:** Ralf Erlebach · GNU GPL v3 or later
-**Dokumentversion:** 3.0 (ausführlich) · Stand: Session 002
+**Dokumentversion:** 3.0 (ausführlich) · Stand: Chat-Session 002
 
 ---
 
@@ -17,38 +17,24 @@ Es besteht aus drei Teilen:
   inkl. Abnahmekriterien.
 - **Technisches Blueprint** (Kap. 5–10) — die konkrete Architektur.
 
-Drei Festlegungen sind dem gesamten Dokument übergeordnet:
+Zwei Festlegungen sind dem gesamten Dokument übergeordnet:
 
 - **Lesart A (verbindlich):** Das Plugin implementiert **keine eigene**
   Abschlusslogik. Es wertet die **vorhandenen** Moodle-Completion-Kriterien nur
   *früher* und *eingegrenzt* aus. Vgl. Kap. 2.3.
 - **L-Q2:** Mindestversion **Moodle 4.5**; **keine** Abwärtskompatibilität zu 4.1–4.4.
-  Getestete und unterstützte Versionen: Moodle 4.5, 5.0, 5.1, 5.2.
-- **Session-Konvention:** Ein Claude-Chat = genau eine Session. Session-Dokumente
-  werden fortlaufend nummeriert (session001.md, session002.md, …) und am Ende
-  jeder Session nach der sessionende-Vorlage erstellt und in docs/sessions/ abgelegt.
 
----
+### §0.1 Versions- und Session-Konvention (verbindlich)
 
-## 0.1 Versions-Konvention
+**Versionsnummer:** `0.MAJOR.MINOR` — MINOR-Increment pro Iterations-Patch;
+reine Fixes (Linting / PHPUnit / Behat) erhalten kein eigenes MINOR-Increment.
 
-**Plugin-Versionen:**
+**Session-Dokumente:** Ein Claude-Chat = genau ein Session-Dokument.
+Dateipfad: `docs/sessions/session-NNN.md` (Bindestrich, dreistellige Nummer).
+Sub-Dokumente einer Session werden nach Abschluss in eine einzige Datei zusammengeführt.
 
-| Phase | Versions-Schema | Beispiel |
-|---|---|---|
-| Phase 1 (Stub) | 0.1.x | 0.1.0, 0.1.1 |
-| Phase 2 (MVP) | 0.2.x | 0.2.0, 0.2.1 |
-| Phase 3+ | 0.3.x+ | nach Bedarf |
-
-MINOR (x) wird pro Iterations-Patch hochgezählt. Reine Fixes (linting,
-unit-test-failures, behat-failures) erhalten kein eigenes MINOR-Increment.
-
-**Patch-ZIPs:** `patch-0.MAJOR.MINOR.zip` (z. B. `patch-0.2.00.zip`).
-Enthalten **nur** geänderte Dateien, kein `.git/`. Docs-Dateien werden nur
-eingeschlossen, wenn der Patch explizit ein Dokumentations-Update liefert.
-
-**version.php-Timestamp:** `YYYYMMDDNN`, erster Patch des Tages = NN 01
-(z. B. `2026070901` = 9. Juli 2026, erster Patch).
+**CI-Matrix (verbindlich):** Moodle 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3
+(PHP 8.1 nur für Moodle 4.5) × MariaDB 10.11 + PostgreSQL 16; PHPUnit + Behat.
 
 ---
 
@@ -117,7 +103,7 @@ keinen Abschluss „aus dem Nichts" erzeugen.
 | ID | Anforderung |
 |---|---|
 | **L-Q1** | Die Performanz der Instanz darf nicht merklich beeinträchtigt werden (im Request nur minimale, gecachte Operationen). |
-| **L-Q2** | Mindestversion **Moodle 4.5** (inkl. 5.x bis 5.2). **Keine** Abwärtskompatibilität zu 4.1–4.4. |
+| **L-Q2** | Mindestversion **Moodle 4.5** (inkl. 5.x). **Keine** Abwärtskompatibilität zu 4.1–4.4. |
 | **L-Q3** | Keine Änderung an Moodle-Kerndateien; ausschließlich dokumentierte APIs. |
 | **L-Q4** | Robustheit: Fehler in einem Ereignis dürfen weder den Nutzer-Request noch andere Observer stören. |
 | **L-Q5** | Nachvollziehbarkeit (optionales Logging/eigenes Log-Event) und DSGVO-Konformität. |
@@ -139,7 +125,7 @@ keinen Abschluss „aus dem Nichts" erzeugen.
 | **P5** (→L-Q1) | Scope wird zu einer Menge in-Scope-Kurs-IDs aufgelöst und in einem MUC-Application-Cache gehalten; Observer macht nur einen Cache-Lookup. Schwere Auswertung in Adhoc-Task; optionaler Synchronmodus. |
 | **P6** (→L-Q4) | Vollständiges `try/catch` in jedem Callback; `debugging()` statt Exception; keine Fehler nach außen. |
 | **P7** (→L-Q5) | `null_provider` (kein eigener PII-Bestand); optionales Log-Event `completion_booked`; Logging-Schalter. |
-| **P8** (→L-Q6) | PHPUnit- und Behat-Tests; Makefile spiegelt CI; GitHub-Actions-Matrix 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3 × MariaDB/PostgreSQL. |
+| **P8** (→L-Q6) | PHPUnit- und Behat-Tests; Makefile spiegelt CI; GitHub-Actions-Matrix 4.5/5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL. |
 | **P9** (→L-Q7) | Keine `dependencies` in `version.php`; `local_adele` zur Laufzeit erkannt. |
 
 ### 4.2 Abnahmekriterien
@@ -151,8 +137,8 @@ keinen Abschluss „aus dem Nichts" erzeugen.
 - Ein in-Scope-Trigger reiht **genau einen** deduplizierten Adhoc-Task ein
   (Test `test_in_scope_trigger_enqueues_task`, `test_repeated_trigger_is_deduplicated`).
 - Keine Doppelverbuchung (`is_course_complete()`-Guard).
-- phpcs (Moodle-Standard, `--max-warnings 0`), phpdoc, PHPUnit und Behat grün auf
-  Moodle 4.5, 5.0, 5.1 und 5.2.
+- phpcs (Moodle-Standard, `--max-warnings 0`), phpdoc, PHPUnit und Behat grün auf 4.5
+  und 5.0.
 - Messbar vernachlässigbare Observer-Kosten im Request (Profiling).
 
 ---
@@ -161,7 +147,7 @@ keinen Abschluss „aus dem Nichts" erzeugen.
 
 ```
 local/instantcoursecompletion/
-├── version.php                 # component, requires 4.5, supported [405,500,501,502]
+├── version.php                 # component, requires 4.5, supported [405,500,501,502], keine deps
 ├── settings.php                # Scope-Modus, Kategorien, Tags, sync/async, Reconcile, Logging
 ├── lib.php                     # Cache-Purge-Callback (Settings-Update)
 ├── db/
@@ -245,8 +231,8 @@ observer::course_module_completion_updated()      (synchron, schlank, wirft nie)
         │  → completion_booker::book(courseid, userid)
         │     1) completion_info::is_enabled()?      sonst return false
         │     2) is_course_complete(user)?           wenn ja: fertig (idempotent)
-        │     3) je Kriterium: completion_criteria::review()
-        │     4) [Phase 2] Aggregation erfüllt? → completion_completion::mark_complete()
+        │     3) je Kriterium: completion_criteria::review()     (Pass 1)
+        │     4) Aggregation ALL/ANY je Typ + gesamt → mark_complete() (Pass 2)
         │
         ▼
 \core\event\course_completed  (vom Kern gefeuert)  →  local_adele etc. reagieren
@@ -300,8 +286,11 @@ auf `course_completed`. Zugriff auf `local_adele` nur defensiv (Existenzprüfung
 - `observer_test` — Trigger-Plumbing direkt über `handle_completion_trigger()`
   (in-Scope reiht 1 Task, Dedup, out-of-Scope 0, sync 0). Bewusst **ohne** Einschreibung/
   Aktivitätsabschluss, um fremde Plugin-Observer unter PHPUnit nicht auszulösen.
-- `completion_booker_test` — stabile Guards (ungültige Eingaben, Completion aus, keine
-  Kriterien).
+- `completion_booker_test` — Guards (ungültige Eingaben, Completion aus, keine Kriterien,
+  Idempotenz) + Phase-2-Integrationstests (alle Kriterien erfüllt → mark_complete(),
+  Kriterien nicht erfüllt → false). Tests verwenden direkte DB-Fixture-Insertion (kein
+  `enrol_user()`), um `user_enrolment_created` und damit fremde Plugin-Observer unter
+  PHPUnit zu vermeiden.
 - `privacy_test` — null_provider.
 - Behat — Settings-Seite.
 
@@ -312,29 +301,27 @@ Completion-Cron bleibt aktiviert (Sicherheitsnetz für zeitbasierte Kriterien).
 
 ---
 
-## 11. CI-Matrix (verbindlich)
+## 11. Phasenplan / offene Punkte
 
-| Moodle | PHP | Datenbank | Typ |
-|---|---|---|---|
-| 4.5 | 8.1, 8.2, 8.3 | MariaDB 10.11, PostgreSQL 16 | PHPUnit + Behat |
-| 5.0 | 8.2, 8.3 | MariaDB 10.11, PostgreSQL 16 | PHPUnit + Behat |
-| 5.1 | 8.2, 8.3 | MariaDB 10.11, PostgreSQL 16 | PHPUnit + Behat |
-| 5.2 | 8.2, 8.3 | MariaDB 10.11, PostgreSQL 16 | PHPUnit + Behat |
-
-Moodle 5.0+ erfordert PHP 8.2+; PHP 8.1 wird für alle 5.x-Versionen ausgeschlossen.
-PHP 8.4 wird aufgenommen, sobald moodle-plugin-ci es vollständig unterstützt.
+- **Phase 1 ✓ (umgesetzt):** Scope-Resolver, Observer-Plumbing, Adhoc-Task, Settings,
+  Privacy, Tests, Infrastruktur. CI grün auf 4.5 / 5.0.
+- **Phase 2 (teilweise umgesetzt):**
+  - ✓ Kursebenen-Aggregation + `completion_completion::mark_complete()` in
+    `completion_booker::book()`: Pass 1 (criteria review), Pass 2 (ALL/ANY-Aggregation
+    je Kriteriumstyp + gesamt), Integrationstests mit DB-Fixture-Insertion.
+    Stabil auf 4.5 / 5.0 / 5.1 / 5.2 (öffentliche Completion-API stabil über alle Versionen).
+  - ○ `reconcile_task`-Implementierung für datums-/dauerbasierte Kriterien.
+  - ○ Optionaler Admin-Report beschleunigter Abschlüsse (bei aktivem Logging).
 
 ---
 
-## 12. Phasenplan / offene Punkte
+## 12. CI-Matrix (verbindlich)
 
-- **Phase 1 (umgesetzt, Stub):** Scope-Resolver, Observer-Plumbing, Adhoc-Task, Settings,
-  Privacy, Tests, Infrastruktur, Versionsmatrix 4.5/5.0/5.1/5.2.
-- **Phase 2:** Kursebenen-Aggregation und `completion_completion::mark_complete()` in
-  `completion_booker::book()` — versionsspezifisch (4.5 vs. 5.x) gepinnt und durch
-  Integrationstests je Aggregationsmethode (ALL/ANY, je Kriteriumstyp) abgesichert;
-  Implementierung des `reconcile_task` für datums-/dauerbasierte Kriterien; optional ein
-  Admin-Report der beschleunigten Abschlüsse (bei aktivem Logging).
+| Moodle | PHP | Datenbank | Jobs |
+|---|---|---|---|
+| 4.5 | 8.1, 8.2, 8.3 | MariaDB 10.11 + PostgreSQL 16 | PHPUnit + Behat |
+| 5.0 | 8.2, 8.3 | MariaDB 10.11 + PostgreSQL 16 | PHPUnit + Behat |
+| 5.1 | 8.2, 8.3 | MariaDB 10.11 + PostgreSQL 16 | PHPUnit + Behat |
+| 5.2 | 8.2, 8.3 | MariaDB 10.11 + PostgreSQL 16 | PHPUnit + Behat |
 
-*Alle internen Completion-Aufrufsequenzen sind vor Implementierung gegen die konkrete
-Zielversion zu verifizieren, da die Interna zwischen 4.5 und 5.x abweichen können.*
+PHP 8.1 ist für alle Moodle-5.x-Zweige ausgeschlossen (PHP-Mindestanforderung 8.2).

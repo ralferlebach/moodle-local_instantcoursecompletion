@@ -8,6 +8,36 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-09
+
+### Added
+- Phase 2: `completion_booker::book()` now performs full course-level aggregation
+  and calls `completion_completion::mark_complete()` when all configured criteria
+  are satisfied.  Aggregation mirrors core's `completion_regular_task` logic but is
+  scoped to a single (course, user) pair:
+  - Pass 1 reviews each criterion via `completion_criteria::review()`, marking
+    criterion-level completions in `course_completion_criteria_completion` when met.
+  - Pass 2 re-reads the post-review DB state and evaluates `COMPLETION_AGGREGATION_ALL`
+    or `COMPLETION_AGGREGATION_ANY` per criteria type and across types via
+    `completion_info::get_aggregation_method()`.
+  - On success: `new completion_completion(['userid', 'course'])->mark_complete()`
+    writes `course_completions.timecompleted` and fires `course_completed`, which
+    triggers downstream processes (certificates, local_adele learning-path progress).
+- New integration tests in `completion_booker_test`:
+  - `test_book_returns_true_when_already_complete` — guard 2 (idempotent).
+  - `test_book_returns_true_when_all_criteria_satisfied` — full Phase 2 booking.
+  - `test_book_returns_false_when_criteria_not_met` — aggregation returns false.
+  All tests use direct DB fixture insertion (no enrolment events) to remain
+  independent of other installed plugins' observers under PHPUnit.
+
+### Fixed (naming)
+- Session document convention: files use `session-NNN.md` (with dash).
+  `docs/sessions/session001.md` from patch-0.2.00 replaced by `session-001.md`.
+  Manual delete required: `docs/sessions/session001.md`, `session-002.md`,
+  `session-003.md` (old sub-session docs; superseded by `session-001.md`).
+- `docs/prompt-templates/sessionstart.txt` and `docs/materials/*.md`: updated
+  session-file references from `session001.md` to `session-001.md` (dash form).
+
 ## [0.2.0] - 2026-07-09
 
 ### Changed
@@ -21,9 +51,9 @@ versioning follows [Semantic Versioning](https://semver.org/).
   PHP 8.3 + MariaDB).
 
 ### Documentation
-- **Session convention established:** one Claude chat session = one session
-  document (`docs/sessions/sessionNNN.md`). Prior sub-documents 001–003
-  merged into a single `docs/sessions/session001.md`; old 002 and 003 deleted.
+- Session convention established: one Claude chat session = one session document
+  (`docs/sessions/session-NNN.md`). Prior sub-documents 001–003 merged into a
+  single `docs/sessions/session-001.md`; old 002 and 003 deleted.
 - `docs/prompt-templates/sessionstart.txt`: reflects new session convention,
   version scheme 0.2.x, and Moodle 4.5 / 5.0 / 5.1 / 5.2 matrix.
 - `docs/materials/Lastenheft_Pflichtenheft_Blueprint.md` (v3.0): added §0.1
@@ -58,7 +88,6 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - `docs/materials/Lastenheft_Pflichtenheft_Blueprint.md` (extensive) and
   `docs/materials/Blueprint_kompakt.md`.
 - `docs/prompt-templates/` (sessionstart, sessionende, planning prompt).
-- `docs/sessions/session-003.md` (session close).
 
 ### Verified
 - Full CI pipeline green: Moodle 4.5 / 5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL
@@ -102,8 +131,5 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Moodle 4.5+ (incl. 5.x). No backward compatibility with 4.1–4.4 (per L-Q2).
 
 ### Not yet implemented (planned)
-- Phase 2: course-level aggregation-and-mark in `completion_booker::book()`
-  (`completion_completion::mark_complete()`), pinned per Moodle version and covered
-  by integration tests for each criteria aggregation method (ALL/ANY, per type).
-- Phase 2: `reconcile_task` implementation for date/duration criteria.
+- Phase 2: reconcile_task implementation for date/duration criteria.
 - Optional admin report listing accelerated completions when logging is enabled.
