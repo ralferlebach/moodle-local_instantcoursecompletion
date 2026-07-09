@@ -17,9 +17,9 @@
 /**
  * Privacy provider for local_instantcoursecompletion.
  *
- * This plugin stores no personal data of its own. It reacts to events and writes
- * course completion via core's completion API into core-owned tables, which have
- * their own privacy providers. Hence a null provider is correct.
+ * The plugin owns no tables. With logging enabled it emits completion_booked events
+ * that the logging subsystem stores on its behalf, so that subsystem is declared as
+ * a link. The stored records belong to core_log, which exports and deletes them.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
@@ -28,16 +28,82 @@
 
 namespace local_instantcoursecompletion\privacy;
 
+use core_privacy\local\metadata\collection;
+use core_privacy\local\request\approved_contextlist;
+use core_privacy\local\request\approved_userlist;
+use core_privacy\local\request\contextlist;
+use core_privacy\local\request\userlist;
+
 /**
- * Null privacy provider — the plugin stores no personal data.
+ * Privacy provider.
  */
-class provider implements \core_privacy\local\metadata\null_provider {
+class provider implements
+    \core_privacy\local\metadata\provider,
+    \core_privacy\local\request\core_userlist_provider,
+    \core_privacy\local\request\plugin\provider {
     /**
-     * Return the language string explaining why no data is stored.
+     * Describe the personal data this plugin causes to be stored.
      *
-     * @return string
+     * @param collection $collection The initialised collection to add items to.
+     * @return collection The updated collection.
      */
-    public static function get_reason(): string {
-        return 'privacy:metadata';
+    public static function get_metadata(collection $collection): collection {
+        $collection->add_subsystem_link('core_log', [], 'privacy:metadata:log');
+        return $collection;
+    }
+
+    /**
+     * Return the contexts holding personal data owned by this plugin.
+     *
+     * @param int $userid The user to search.
+     * @return contextlist Always empty; the log subsystem owns the records.
+     */
+    public static function get_contexts_for_userid(int $userid): contextlist {
+        return new contextlist();
+    }
+
+    /**
+     * Add the users holding personal data owned by this plugin in the given context.
+     *
+     * @param userlist $userlist The userlist to add users to.
+     * @return void
+     */
+    public static function get_users_in_context(userlist $userlist): void {
+    }
+
+    /**
+     * Export personal data owned by this plugin.
+     *
+     * @param approved_contextlist $contextlist The approved contexts to export for.
+     * @return void
+     */
+    public static function export_user_data(approved_contextlist $contextlist): void {
+    }
+
+    /**
+     * Delete personal data owned by this plugin for all users in one context.
+     *
+     * @param \context $context The context to delete in.
+     * @return void
+     */
+    public static function delete_data_for_all_users_in_context(\context $context): void {
+    }
+
+    /**
+     * Delete personal data owned by this plugin for one user.
+     *
+     * @param approved_contextlist $contextlist The approved contexts to delete in.
+     * @return void
+     */
+    public static function delete_data_for_user(approved_contextlist $contextlist): void {
+    }
+
+    /**
+     * Delete personal data owned by this plugin for several users in one context.
+     *
+     * @param approved_userlist $userlist The approved users to delete for.
+     * @return void
+     */
+    public static function delete_data_for_users(approved_userlist $userlist): void {
     }
 }

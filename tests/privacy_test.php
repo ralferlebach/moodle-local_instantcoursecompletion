@@ -24,6 +24,7 @@
 
 namespace local_instantcoursecompletion;
 
+use core_privacy\local\metadata\collection;
 use local_instantcoursecompletion\privacy\provider;
 
 /**
@@ -33,18 +34,30 @@ use local_instantcoursecompletion\privacy\provider;
  */
 final class privacy_test extends \advanced_testcase {
     /**
-     * The provider is a null provider and its reason resolves to a real string.
+     * The provider declares the logging subsystem and nothing else.
      *
      * @return void
      */
-    public function test_null_provider_reason(): void {
+    public function test_get_metadata_links_the_log_subsystem(): void {
         $this->resetAfterTest(true);
 
-        $this->assertInstanceOf(\core_privacy\local\metadata\null_provider::class, new provider());
+        $collection = provider::get_metadata(new collection('local_instantcoursecompletion'));
+        $items = $collection->get_collection();
 
-        $reason = provider::get_reason();
-        $this->assertIsString($reason);
-        // Must resolve to a defined language string (no missing-string placeholder).
-        $this->assertStringNotContainsString('[[', get_string($reason, 'local_instantcoursecompletion'));
+        $this->assertCount(1, $items);
+        $this->assertInstanceOf(\core_privacy\local\metadata\types\subsystem_link::class, reset($items));
+        $this->assertSame('core_log', reset($items)->get_name());
+    }
+
+    /**
+     * The plugin owns no contexts of its own.
+     *
+     * @return void
+     */
+    public function test_no_contexts_are_owned(): void {
+        $this->resetAfterTest(true);
+
+        $user = $this->getDataGenerator()->create_user();
+        $this->assertCount(0, provider::get_contexts_for_userid((int)$user->id)->get_contextids());
     }
 }

@@ -17,10 +17,6 @@
 /**
  * Evaluates and books a course completion for a single (course, user) pair.
  *
- * This class is a thin wrapper around Moodle's own completion API. It does NOT
- * re-implement completion criteria — it evaluates existing criteria instantly
- * instead of waiting for the scheduled task completion_regular_task.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -32,132 +28,292 @@ namespace local_instantcoursecompletion;
  * Course-completion booker.
  */
 class completion_booker {
+    /** @var string Lock type serialising concurrent bookings of the same pair. */
+    protected const LOCK_TYPE = 'local_instantcoursecompletion_booking';
+
+    /** @var int Seconds to wait for the booking lock before giving up. */
+    protected const LOCK_TIMEOUT = 3;
+
     /**
-     * Evaluate and, if all criteria are met, book the course completion for the user.
+     * Evaluate the course's completion criteria for one user and aggregate the result.
      *
-     * Each completion criterion is evaluated via completion_criteria::review() with
-     * $mark = false. This reads the criterion's underlying data source (e.g.
-     * course_modules_completion for activity criteria, grade_grades for grade criteria)
-     * and returns a boolean without writing any criterion-level completion records.
-     * Criterion-level record management is left to core's completion_regular_task
-     * (Lesart A — no new completion logic in this plugin).
-     *
-     * The results are aggregated using the configured ALL / ANY method per criteria
-     * type and overall. If all conditions are satisfied,
-     * completion_completion::mark_complete() is called, which writes to
-     * course_completions and fires course_completed.
-     *
-     * Guard order:
-     *   1. Course completion must be enabled.
-     *   2. Skip if the user is already marked complete (idempotent).
-     *   3. Skip if no completion criteria are configured.
+     * Runs the same three-stage pipeline core uses:
+     *   1. Each criterion is reviewed; newly satisfied ones get a
+     *      course_completion_crit_compl record.
+     *   2. Writing such a record flags the course_completions row for reaggregation.
+     *   3. aggregate_completions() applies the per-type and overall aggregation
+     *      methods and marks the course complete with the latest criterion timestamp.
      *
      * @param int $courseid Course ID.
      * @param int $userid   User ID.
-     * @return bool True if a course completion was (or already is) booked; false otherwise.
+     * @return bool True if the course is complete for the user after this call.
      */
     public static function book(int $courseid, int $userid): bool {
-        global $CFG;
-        require_once($CFG->libdir . '/completionlib.php');
-
-        if ($courseid <= 0 || $userid <= 0 || $courseid == SITEID) {
+        $course = self::load_course($courseid);
+        if (!$course) {
             return false;
         }
 
-        $course = get_course($courseid);
         $info = new \completion_info($course);
-
-        // Guard 1: completion must be enabled for this course.
         if (!$info->is_enabled()) {
             return false;
         }
 
-        // Guard 2: already complete — nothing to do (idempotent).
         if ($info->is_course_complete($userid)) {
             self::log($courseid, $userid, 'already-complete');
             return true;
         }
 
-        // Guard 3: the course must have completion criteria configured.
+        // Teachers and other roles without moodle/course:isincompletionreports never
+        // appear in a completion report and must not receive a completion record.
+        if (!$info->is_tracked_user($userid)) {
+            return false;
+        }
+
         $criteria = $info->get_criteria();
         if (empty($criteria)) {
             return false;
         }
 
-        // Evaluate each criterion with $mark = false so review() only checks the
-        // underlying data source (course_modules_completion, grade_grades, …) without
-        // writing criterion-level completion records.  Group results by criteriatype
-        // so the per-type aggregation can be applied in the next step.
-        $completion = new \completion_completion(['userid' => $userid, 'course' => $courseid]);
-        $typecriteria = [];
-        foreach ($criteria as $criterion) {
-            $type = (int)$criterion->criteriatype;
-            if (!isset($typecriteria[$type])) {
-                $typecriteria[$type] = [];
-            }
-            $typecriteria[$type][] = (bool)$criterion->review($completion, false);
-        }
-
-        // Per-type aggregation: is each group of criteria satisfied?
-        $typesatisfied = [];
-        foreach ($typecriteria as $type => $results) {
-            $values = array_values($results);
-            if ($info->get_aggregation_method($type) == COMPLETION_AGGREGATION_ALL) {
-                $typesatisfied[$type] = !in_array(false, $values, true);
-            } else {
-                $typesatisfied[$type] = in_array(true, $values, true);
-            }
-        }
-
-        if (empty($typesatisfied)) {
+        $lock = self::acquire_lock($courseid, $userid);
+        if (!$lock) {
             return false;
         }
 
-        // Overall aggregation across types.
-        if ($info->get_aggregation_method() == COMPLETION_AGGREGATION_ALL) {
-            $allmet = !in_array(false, $typesatisfied, true);
-        } else {
-            $allmet = in_array(true, $typesatisfied, true);
+        try {
+            // A parallel booking may have completed the course while this call waited
+            // for the lock; re-checking here is what makes the lock useful.
+            if ($info->is_course_complete($userid)) {
+                self::log($courseid, $userid, 'already-complete');
+                return true;
+            }
+
+            foreach ($criteria as $criterion) {
+                self::mark_criterion($info, $criterion, $userid);
+            }
+
+            return self::aggregate($info, $courseid, $userid);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Evaluate a single criterion for one user and aggregate the result.
+     *
+     * A due-time task knows exactly which criterion it is waiting for, so re-reviewing
+     * the whole criteria set once per user would be wasted work. aggregate_completions()
+     * still sees every criterion completion record that exists, so the outcome is the
+     * same as book()'s.
+     *
+     * The completion_info is passed in rather than built here: a batch shares one across
+     * all of its users, which is the point of the batch.
+     *
+     * @param \completion_info     $info      Completion info of the course.
+     * @param int                  $courseid  Course ID.
+     * @param \completion_criteria $criterion The criterion that fell due.
+     * @param int                  $userid    User ID.
+     * @return bool True if the course is complete for the user after this call.
+     */
+    public static function book_criterion(
+        \completion_info $info,
+        int $courseid,
+        \completion_criteria $criterion,
+        int $userid
+    ): bool {
+        if ($info->is_course_complete($userid)) {
+            self::log($courseid, $userid, 'already-complete');
+            return true;
         }
 
-        if (!$allmet) {
+        if (!$info->is_tracked_user($userid)) {
+            return false;
+        }
+
+        $lock = self::acquire_lock($courseid, $userid);
+        if (!$lock) {
+            return false;
+        }
+
+        try {
+            if ($info->is_course_complete($userid)) {
+                self::log($courseid, $userid, 'already-complete');
+                return true;
+            }
+
+            self::mark_criterion($info, $criterion, $userid);
+
+            return self::aggregate($info, $courseid, $userid);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Take the lock that keeps two processes from booking the same pair at once.
+     *
+     * completion_booked is a plugin event, not a core data write, so nothing in Moodle
+     * itself makes two concurrent bookings idempotent from an observer's point of view.
+     * The lock is per (course, user), not per course: a page-wide lock would serialise
+     * an entire batch behind whichever user happens to also be mid-booking elsewhere.
+     *
+     * A short timeout is deliberate. If the pair is genuinely being booked elsewhere,
+     * that call will finish the work; there is nothing for this one to contribute by
+     * waiting, and the criteria will be re-evaluated the next time anything asks again.
+     *
+     * @param int $courseid Course ID.
+     * @param int $userid   User ID.
+     * @return \core\lock\lock|null The lock, or null when it could not be taken in time.
+     */
+    protected static function acquire_lock(int $courseid, int $userid): ?\core\lock\lock {
+        $factory = \core\lock\lock_config::get_lock_factory(self::LOCK_TYPE);
+        $lock = $factory->get_lock($courseid . '_' . $userid, self::LOCK_TIMEOUT);
+
+        return $lock ?: null;
+    }
+
+    /**
+     * Load a course, tolerating one that has been deleted meanwhile.
+     *
+     * @param int $courseid Course ID.
+     * @return \stdClass|null
+     */
+    public static function load_course(int $courseid): ?\stdClass {
+        global $CFG;
+        require_once($CFG->libdir . '/completionlib.php');
+
+        if ($courseid <= 0 || $courseid == SITEID) {
+            return null;
+        }
+
+        try {
+            return get_course($courseid);
+        } catch (\dml_exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Apply the aggregation methods and report whether the course is now complete.
+     *
+     * @param \completion_info $info     Completion info of the course.
+     * @param int              $courseid Course ID.
+     * @param int              $userid   User ID.
+     * @return bool
+     */
+    protected static function aggregate(\completion_info $info, int $courseid, int $userid): bool {
+        // Reload after the criterion writes: mark_inprogress() creates the row and
+        // sets the reaggregate flag that aggregate_completions() selects on.
+        $ccompletion = new \completion_completion(['course' => $courseid, 'userid' => $userid]);
+        if (empty($ccompletion->id) || empty($ccompletion->reaggregate)) {
             self::log($courseid, $userid, 'criteria-not-met');
             return false;
         }
 
-        // All criteria satisfied per the configured aggregation.
-        // Mark the course complete — inserts/updates course_completions and fires
-        // core\event\course_completed, which triggers downstream processes.
-        $cc = new \completion_completion(['userid' => $userid, 'course' => $courseid]);
-        $cc->mark_complete();
-        self::log($courseid, $userid, 'booked');
-        return true;
+        aggregate_completions((int)$ccompletion->id);
+
+        $booked = $info->is_course_complete($userid);
+        self::log($courseid, $userid, $booked ? 'booked' : 'criteria-not-met');
+        return $booked;
+    }
+
+    /**
+     * Write a criterion completion record if the user newly satisfies this criterion.
+     *
+     * Self, role and unenrol criteria are skipped: their records are written by the
+     * user action, the teacher action and the unenrolment observer respectively, and
+     * their review() implementations cannot decide satisfaction from stored data.
+     *
+     * @param \completion_info     $info      Completion info of the course.
+     * @param \completion_criteria $criterion The criterion.
+     * @param int                  $userid    User ID.
+     * @return void
+     */
+    protected static function mark_criterion(\completion_info $info, \completion_criteria $criterion, int $userid): void {
+        $type = (int)$criterion->criteriatype;
+        if (in_array($type, self::externally_marked_types(), true)) {
+            return;
+        }
+
+        $criterioncompletion = $info->get_user_completion($userid, $criterion);
+        if ($criterioncompletion->is_complete()) {
+            return;
+        }
+
+        if ($type === COMPLETION_CRITERIA_TYPE_DATE) {
+            // The criterion is satisfied as of its end date, not as of now.
+            if ($criterion->review($criterioncompletion, false)) {
+                $criterioncompletion->mark_complete((int)$criterion->timeend);
+            }
+            return;
+        }
+
+        if ($type === COMPLETION_CRITERIA_TYPE_DURATION) {
+            $duetime = self::duration_due_time($criterion, $userid);
+            if ($duetime !== null && $duetime <= time()) {
+                $criterioncompletion->mark_complete($duetime);
+            }
+            return;
+        }
+
+        // Let core decide and record the criterion; it also populates type-specific
+        // fields such as gradefinal.
+        $criterion->review($criterioncompletion, true);
+    }
+
+    /**
+     * The moment a duration criterion becomes satisfied for a user.
+     *
+     * @param \completion_criteria $criterion The duration criterion.
+     * @param int                  $userid    User ID.
+     * @return int|null Timestamp, or null when the user has no usable enrolment.
+     */
+    protected static function duration_due_time(\completion_criteria $criterion, int $userid): ?int {
+        $enrolperiod = (int)$criterion->enrolperiod;
+        if ($enrolperiod <= 0) {
+            return null;
+        }
+
+        $timeenrolled = due_scheduler::time_enrolled((int)$criterion->course, $userid);
+        return $timeenrolled === null ? null : $timeenrolled + $enrolperiod;
+    }
+
+    /**
+     * Criterion types whose completion records this plugin never writes itself.
+     *
+     * @return int[]
+     */
+    protected static function externally_marked_types(): array {
+        return [
+            COMPLETION_CRITERIA_TYPE_SELF,
+            COMPLETION_CRITERIA_TYPE_ROLE,
+            COMPLETION_CRITERIA_TYPE_UNENROL,
+        ];
     }
 
     /**
      * Optional logging, gated by the enablelogging setting.
      *
-     * When outcome is 'booked', also fires a completion_booked event so that the
-     * admin report (Site administration > Reports > Accelerated completions) can
-     * surface accelerated completions from the standard logstore.
-     *
      * @param int    $courseid Course ID.
      * @param int    $userid   User ID.
-     * @param string $outcome  Short outcome tag ('booked' | 'criteria-not-met' | 'already-complete').
+     * @param string $outcome  Outcome tag: booked, criteria-not-met or already-complete.
      * @return void
      */
     protected static function log(int $courseid, int $userid, string $outcome): void {
         if (!get_config('local_instantcoursecompletion', 'enablelogging')) {
             return;
         }
-        mtrace("local_instantcoursecompletion: course={$courseid} user={$userid} outcome={$outcome}");
+
+        if (CLI_SCRIPT) {
+            mtrace("local_instantcoursecompletion: course={$courseid} user={$userid} outcome={$outcome}");
+        }
+
         if ($outcome === 'booked') {
-            $event = event\completion_booked::create([
-                'objectid'      => $courseid,
-                'context'       => \context_course::instance($courseid),
+            event\completion_booked::create([
+                'objectid' => $courseid,
+                'context' => \context_course::instance($courseid),
                 'relateduserid' => $userid,
-            ]);
-            $event->trigger();
+            ])->trigger();
         }
     }
 }

@@ -17,9 +17,6 @@
 /**
  * Ad-hoc task that books a course completion off the web request.
  *
- * Queued by \local_instantcoursecompletion\observer in async mode. Identical
- * pending tasks (same custom data + user) are collapsed by the scheduler.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -28,6 +25,7 @@
 namespace local_instantcoursecompletion\task;
 
 use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\scope_resolver;
 
 /**
  * Ad-hoc course-completion booking task.
@@ -43,9 +41,9 @@ class book_completion_task extends \core\task\adhoc_task {
     }
 
     /**
-     * Execute the booking.
+     * Book the completion for the queued course and user.
      *
-     * Expected custom data: {courseid:int, userid:int}.
+     * Expected custom data: courseid and userid, both integers.
      *
      * @return void
      */
@@ -53,18 +51,17 @@ class book_completion_task extends \core\task\adhoc_task {
         $data = $this->get_custom_data();
 
         $courseid = isset($data->courseid) ? (int)$data->courseid : 0;
-        $userid   = isset($data->userid) ? (int)$data->userid : 0;
+        $userid = isset($data->userid) ? (int)$data->userid : 0;
 
         if ($courseid <= 0 || $userid <= 0) {
             return;
         }
 
-        try {
-            completion_booker::book($courseid, $userid);
-        } catch (\Throwable $e) {
-            // Log and let the scheduler retry per its normal policy.
-            mtrace('local_instantcoursecompletion book_completion_task failed: ' . $e->getMessage());
-            throw $e;
+        // The scope may have been narrowed between queueing and execution.
+        if (!scope_resolver::is_in_scope($courseid)) {
+            return;
         }
+
+        completion_booker::book($courseid, $userid);
     }
 }

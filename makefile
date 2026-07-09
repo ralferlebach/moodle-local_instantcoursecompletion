@@ -138,11 +138,26 @@ phpunit:
 		echo "SKIP: phpunit_dataroot not configured."; \
 		echo "      Add to config.php: \$$CFG->phpunit_dataroot = '...';"; \
 	else \
-		if ! (cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/util.php --diag \
-				> /dev/null 2>&1); then \
-			echo "PHPUnit environment uninitialised or outdated — reinitialising..."; \
-			cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/init.php; \
-		fi; \
+		cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/util.php --diag \
+			> /dev/null 2>&1; \
+		diag=$$?; \
+		case "$$diag" in \
+		0) ;; \
+		140) \
+			echo "PHPUnit environment not initialised - initialising..."; \
+			cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/init.php || exit 1; \
+			;; \
+		141) \
+			echo "PHPUnit environment outdated (plugin versions changed) - reinitialising..."; \
+			cd $(MOODLE_ROOT) && $(PHP) admin/tool/phpunit/cli/init.php || exit 1; \
+			;; \
+		*) \
+			echo "ERROR: PHPUnit environment reports a configuration problem (exit $$diag)."; \
+			echo "       Reinitialising cannot help. Diagnose it with:"; \
+			echo "       cd $(MOODLE_ROOT) && php admin/tool/phpunit/cli/util.php --diag"; \
+			exit "$$diag"; \
+			;; \
+		esac; \
 		tmpout=$$(mktemp); \
 		cd $(MOODLE_ROOT) && $(PHP) vendor/bin/phpunit \
 			--testsuite $(PLUGIN_NAME)_testsuite \

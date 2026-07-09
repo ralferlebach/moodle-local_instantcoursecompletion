@@ -17,10 +17,6 @@
 /**
  * Admin settings for local_instantcoursecompletion.
  *
- * Defines the observer scope (all courses / selected category branches / delegated
- * to local_adele) plus the processing mode (async ad-hoc task vs. synchronous) and
- * an optional logging toggle.
- *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -28,6 +24,8 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+use local_instantcoursecompletion\admin\bounded_int_setting;
+use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
 if ($hassiteconfig) {
@@ -39,83 +37,6 @@ if ($hassiteconfig) {
     );
     $ADMIN->add('localplugins', $settings);
 
-    // Scope mode.
-    // The "adele" option is only offered when local_adele is installed.
-    $scopeoptions = [
-        scope_resolver::SCOPE_ALL          => get_string('scope:all', $component),
-        scope_resolver::SCOPE_CATEGORIES   => get_string('scope:categories', $component),
-    ];
-    if (scope_resolver::adele_available()) {
-        $scopeoptions[scope_resolver::SCOPE_ADELE] = get_string('scope:adele', $component);
-    }
-
-    $settings->add(new admin_setting_configselect(
-        $component . '/scopemode',
-        get_string('setting:scopemode', $component),
-        get_string('setting:scopemode_desc', $component),
-        scope_resolver::SCOPE_ALL,
-        $scopeoptions
-    ));
-
-    // Category branches (only relevant for the "categories" scope).
-    $categories = core_course_category::make_categories_list();
-    $settings->add(new admin_setting_configmultiselect(
-        $component . '/categories',
-        get_string('setting:categories', $component),
-        get_string('setting:categories_desc', $component),
-        [],
-        $categories
-    ));
-    $settings->hide_if($component . '/categories', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
-
-    // Include / exclude tags (only relevant for the "categories" scope).
-    $settings->add(new admin_setting_configtextarea(
-        $component . '/includetags',
-        get_string('setting:includetags', $component),
-        get_string('setting:includetags_desc', $component),
-        '',
-        PARAM_TEXT
-    ));
-    $settings->hide_if($component . '/includetags', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
-
-    $settings->add(new admin_setting_configtextarea(
-        $component . '/excludetags',
-        get_string('setting:excludetags', $component),
-        get_string('setting:excludetags_desc', $component),
-        '',
-        PARAM_TEXT
-    ));
-    $settings->hide_if($component . '/excludetags', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
-
-    // Processing mode.
-    $settings->add(new admin_setting_configselect(
-        $component . '/processingmode',
-        get_string('setting:processingmode', $component),
-        get_string('setting:processingmode_desc', $component),
-        'async',
-        [
-            'async' => get_string('processingmode:async', $component),
-            'sync'  => get_string('processingmode:sync', $component),
-        ]
-    ));
-
-    // Optional safety-net reconcile scheduled task.
-    $settings->add(new admin_setting_configcheckbox(
-        $component . '/reconcile_enabled',
-        get_string('setting:reconcile', $component),
-        get_string('setting:reconcile_desc', $component),
-        0
-    ));
-
-    // Logging.
-    $settings->add(new admin_setting_configcheckbox(
-        $component . '/enablelogging',
-        get_string('setting:enablelogging', $component),
-        get_string('setting:enablelogging_desc', $component),
-        0
-    ));
-
-    // Report page: accelerated completions visible in logstore.
     $ADMIN->add('reports', new admin_externalpage(
         $component . '_report',
         get_string('report:title', $component),
@@ -123,10 +44,140 @@ if ($hassiteconfig) {
         'moodle/site:config'
     ));
 
-    // Any settings change may alter the resolved scope — purge the cache.
-    foreach (['scopemode', 'categories', 'includetags', 'excludetags'] as $name) {
-        if (isset($settings->settings->{$name})) {
-            $settings->settings->{$name}->set_updatedcallback('local_instantcoursecompletion_purge_scope_cache');
+    // Building the category list is expensive, so only do it when the page is rendered.
+    if ($ADMIN->fulltree) {
+        $purgecallback = 'local_instantcoursecompletion_purge_scope_cache';
+
+        $scopeoptions = [
+            scope_resolver::SCOPE_ALL => get_string('scope:all', $component),
+            scope_resolver::SCOPE_CATEGORIES => get_string('scope:categories', $component),
+        ];
+        if (scope_resolver::adele_available()) {
+            $scopeoptions[scope_resolver::SCOPE_ADELE] = get_string('scope:adele', $component);
+        } else if (get_config($component, 'scopemode') === scope_resolver::SCOPE_ADELE) {
+            // The scope was configured against a plugin that is no longer present.
+            $settings->add(new admin_setting_description(
+                $component . '/adelemissing',
+                '',
+                $OUTPUT->notification(get_string('warning:adelemissing', $component), 'warning')
+            ));
         }
+
+        $setting = new admin_setting_configselect(
+            $component . '/scopemode',
+            get_string('setting:scopemode', $component),
+            get_string('setting:scopemode_desc', $component),
+            scope_resolver::SCOPE_ALL,
+            $scopeoptions
+        );
+        $setting->set_updatedcallback($purgecallback);
+        $settings->add($setting);
+
+        $setting = new admin_setting_configmultiselect(
+            $component . '/categories',
+            get_string('setting:categories', $component),
+            get_string('setting:categories_desc', $component),
+            [],
+            core_course_category::make_categories_list()
+        );
+        $setting->set_updatedcallback($purgecallback);
+        $settings->add($setting);
+        $settings->hide_if($component . '/categories', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
+
+        $setting = new admin_setting_configtextarea(
+            $component . '/includetags',
+            get_string('setting:includetags', $component),
+            get_string('setting:includetags_desc', $component),
+            '',
+            PARAM_TEXT
+        );
+        $setting->set_updatedcallback($purgecallback);
+        $settings->add($setting);
+        $settings->hide_if($component . '/includetags', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
+
+        $setting = new admin_setting_configtextarea(
+            $component . '/excludetags',
+            get_string('setting:excludetags', $component),
+            get_string('setting:excludetags_desc', $component),
+            '',
+            PARAM_TEXT
+        );
+        $setting->set_updatedcallback($purgecallback);
+        $settings->add($setting);
+        $settings->hide_if($component . '/excludetags', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
+
+        $settings->add(new admin_setting_configcheckbox(
+            $component . '/schedulingenabled',
+            get_string('setting:schedulingenabled', $component),
+            get_string('setting:schedulingenabled_desc', $component),
+            1
+        ));
+
+        $settings->add(new admin_setting_configduration(
+            $component . '/schedulinghorizon',
+            get_string('setting:schedulinghorizon', $component),
+            get_string('setting:schedulinghorizon_desc', $component),
+            WEEKSECS
+        ));
+        $settings->hide_if($component . '/schedulinghorizon', $component . '/schedulingenabled', 'notchecked');
+
+        // The discovery task runs hourly (db/tasks.php); a horizon shorter than that
+        // plus the batch window would let due times pass before anything plans them.
+        $minhorizon = HOURSECS + due_scheduler::BATCH_WINDOW;
+        $currenthorizon = (int)get_config($component, 'schedulinghorizon');
+        if ((bool)get_config($component, 'schedulingenabled') && $currenthorizon > 0 && $currenthorizon < $minhorizon) {
+            $settings->add(new admin_setting_description(
+                $component . '/horizontooshort',
+                '',
+                $OUTPUT->notification(
+                    get_string('warning:horizontooshort', $component, format_time($minhorizon)),
+                    'warning'
+                )
+            ));
+        }
+
+        $settings->add(new bounded_int_setting(
+            $component . '/batchsize',
+            get_string('setting:batchsize', $component),
+            get_string('setting:batchsize_desc', $component),
+            500,
+            1,
+            50000
+        ));
+        $settings->hide_if($component . '/batchsize', $component . '/schedulingenabled', 'notchecked');
+
+        $settings->add(new bounded_int_setting(
+            $component . '/maxtasksperrun',
+            get_string('setting:maxtasksperrun', $component),
+            get_string('setting:maxtasksperrun_desc', $component),
+            5000,
+            1,
+            100000
+        ));
+        $settings->hide_if($component . '/maxtasksperrun', $component . '/schedulingenabled', 'notchecked');
+
+        $settings->add(new admin_setting_configcheckbox(
+            $component . '/reconcile_enabled',
+            get_string('setting:reconcile', $component),
+            get_string('setting:reconcile_desc', $component),
+            0
+        ));
+
+        $settings->add(new bounded_int_setting(
+            $component . '/reconcilebudget',
+            get_string('setting:reconcilebudget', $component),
+            get_string('setting:reconcilebudget_desc', $component),
+            5000,
+            1,
+            100000
+        ));
+        $settings->hide_if($component . '/reconcilebudget', $component . '/reconcile_enabled', 'notchecked');
+
+        $settings->add(new admin_setting_configcheckbox(
+            $component . '/enablelogging',
+            get_string('setting:enablelogging', $component),
+            get_string('setting:enablelogging_desc', $component),
+            0
+        ));
     }
 }

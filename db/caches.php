@@ -26,15 +26,46 @@ defined('MOODLE_INTERNAL') || die();
 
 $definitions = [
 
-    // Resolved set of in-scope course IDs (keyed by scope-configuration hash).
-    // Kept small and read on the synchronous request path, so static acceleration
-    // is enabled. Invalidated by observer::invalidate_scope_cache() and by the
-    // settings updated-callback (see lib.php).
-    'scopecourseids' => [
-        'mode'               => cache_store::MODE_APPLICATION,
-        'simplekeys'         => true,
-        'simpledata'         => false,
+    // The selected category branches expanded to include every sub-category, keyed by a
+    // hash of the selection. Bounded by the number of categories on the site.
+    'scopecategoryids' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
         'staticacceleration' => true,
         'staticaccelerationsize' => 2,
+    ],
+
+    // Include and exclude tag names resolved to tag IDs, keyed by a hash of the scope
+    // configuration. Without this, every course checked under a cache miss would
+    // resolve the same handful of tag names again.
+    'scopetagids' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
+        'staticacceleration' => true,
+        'staticaccelerationsize' => 2,
+    ],
+
+    // Whether a course is in scope, stored as 0 or 1 and filled lazily per course.
+    // Keyed by the scope configuration hash and the course ID.
+    'scopecoursemembership' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
+        'staticacceleration' => true,
+        'staticaccelerationsize' => 50,
+    ],
+
+    // Criterion types configured per course, keyed by course ID. Read on the request
+    // path by the observers; the TTL bounds staleness after a restore, which raises
+    // no course_completion_updated event.
+    'coursecriteriatypes' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
+        'staticacceleration' => true,
+        'staticaccelerationsize' => 20,
+        'ttl' => 3600,
     ],
 ];
