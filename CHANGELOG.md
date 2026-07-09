@@ -8,6 +8,31 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-09
+
+### Changed
+- Bumped plugin release to 0.2.0; version timestamp 2026070901.
+- Extended `$plugin->supported` to `[405, 500, 501, 502]` (Moodle 4.5–5.2).
+- CI dev matrix (`moodle-ci.yml`): added `MOODLE_501_STABLE` and
+  `MOODLE_502_STABLE` to both PHPUnit and Behat jobs; PHP 8.1 excluded for
+  all Moodle 5.x branches.
+- CI release matrix (`moodle-release.yml`): added two include-rows each for
+  Moodle 5.1 (PHP 8.2 + MariaDB, PHP 8.3 + pgsql) and 5.2 (PHP 8.2 + pgsql,
+  PHP 8.3 + MariaDB).
+
+### Documentation
+- **Session convention established:** one Claude chat session = one session
+  document (`docs/sessions/sessionNNN.md`). Prior sub-documents 001–003
+  merged into a single `docs/sessions/session001.md`; old 002 and 003 deleted.
+- `docs/prompt-templates/sessionstart.txt`: reflects new session convention,
+  version scheme 0.2.x, and Moodle 4.5 / 5.0 / 5.1 / 5.2 matrix.
+- `docs/materials/Lastenheft_Pflichtenheft_Blueprint.md` (v3.0): added §0.1
+  (version convention), updated P8/CI-matrix to include 5.1 and 5.2, added
+  Kap. 11 CI-Matrix table, fixed L-Q2 to "4.5 incl. 5.x bis 5.2".
+- `docs/materials/Blueprint_kompakt.md`: fixed L-Q2 (was incorrectly "4.1–4.5"),
+  updated to "4.5, incl. 5.x (tested: 4.5, 5.0, 5.1, 5.2)"; added
+  session-convention note to status header.
+
 ## [0.1.1] - 2026-07-08
 
 ### Fixed
@@ -33,6 +58,11 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - `docs/materials/Lastenheft_Pflichtenheft_Blueprint.md` (extensive) and
   `docs/materials/Blueprint_kompakt.md`.
 - `docs/prompt-templates/` (sessionstart, sessionende, planning prompt).
+- `docs/sessions/session-003.md` (session close).
+
+### Verified
+- Full CI pipeline green: Moodle 4.5 / 5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL
+  (phpcs 0/0, phpdoc, PHPUnit, Behat).
 
 ## [0.1.0]
 

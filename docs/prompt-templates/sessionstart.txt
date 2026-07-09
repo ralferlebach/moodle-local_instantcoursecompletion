@@ -16,8 +16,13 @@ Das aktuelle Dokument liegt im Plugin-Repo:
 
 ### B) Kontext-Dokument der letzten Sitzung
 
-Das aktuelle Kontext-Dokument (sessionende der Vorsitzung) ist im Anhang
-zu finden. Ältere Kontext-Dokumente zwecks Referenz: docs/sessions/
+Das aktuelle Session-Dokument (sessionende der Vorsitzung) ist im Anhang
+zu finden. Ältere Session-Dokumente zwecks Referenz: docs/sessions/
+
+**Session-Konvention (verbindlich):**
+  Ein Claude-Chat = genau eine Session. Session-Dokumente sind fortlaufend
+  nummeriert (session001.md, session002.md, ...). Pro Chat wird am Ende
+  ein Dokument nach der sessionende-Vorlage geschrieben und abgelegt.
 
 ---
 
@@ -27,8 +32,9 @@ Der aktuelle Plugin-Stand liegt als Patch-ZIP im Anhang, einzuspielen
 in die Moodle-Installation unter local/instantcoursecompletion/.
 
 Moodle-Installation: moodle45_aliseadele
-PHP: >= 8.1 (Moodle 4.5) bzw. >= 8.2 (Moodle 5.0)
-Moodle: >= 4.5 (2024100700); getestet: 4.5, 5.0. KEINE Abwärtskompatibilität < 4.5.
+PHP: >= 8.1 (Moodle 4.5) bzw. >= 8.2 (Moodle 5.0+)
+Moodle: >= 4.5 (2024100700); getestet: 4.5, 5.0, 5.1, 5.2.
+KEINE Abwärtskompatibilität < 4.5.
 
 Haupt-Dependencies:
   KEINE. Integration mit local_adele ist OPTIONAL und wird zur Laufzeit erkannt
@@ -38,38 +44,50 @@ Haupt-Dependencies:
 
 ### D) Aktueller Entwicklungsstand
 
-**Version:** 0.1.1 (2026070801)
+**Version:** 0.2.0 (2026070901) — Stub mit voller Infrastruktur, CI grün auf
+Moodle 4.5 / 5.0 / 5.1 / 5.2.
+
+**Versions-Konvention dieser Sitzung (verbindlich):**
+  Format: 0.MAJOR.MINOR, wobei MINOR pro Iteration hochzählt (0.2.0, 0.2.1, ...).
+  Reine Fixes (linting, unit-test, behat-failures) erhalten kein eigenes MINOR-
+  Increment — sie werden als Teil der laufenden Iteration ausgeliefert.
+  Die Versionsnummer in version.php hat das Format YYYYMMDDNN (z. B. 2026070901).
+  Patch-ZIPs heißen patch-0.MAJOR.MINOR.zip.
 
 **Grundsatz (nicht ohne explizite Diskussion ändern):**
   Lesart A — KEINE eigene Abschlusslogik. Das Plugin wertet vorhandene Moodle-
   Completion-Kriterien nur früher und eingegrenzt aus (Observer -> Scope -> Kern-API).
 
-**Zuletzt abgeschlossen (Session 002):**
+**Zuletzt abgeschlossen (Session 001):**
+  - Vollständiger Plugin-Stub mit Infrastruktur angelegt (v0.1.0 → v0.1.1)
+  - CI vollständig grün (Moodle 4.5/5.0 × PHP 8.1–8.3 × MariaDB/PostgreSQL)
   - Lint-Fixes: Lang-Dateien alphabetisch, keine Kommentar-Trennzeilen
   - PHPDoc: Observer-Parameter auf konkrete Event-Typen gehoben (moodlecheck)
   - Unit-Test-Ursache behoben: Trigger-Logik direkt testbar
-    (observer::handle_completion_trigger) statt Umweg über Einschreibung/Aktivität,
-    der im lokalen Environment den fremden local_adele-Observer auslöste
+    (observer::handle_completion_trigger) statt Umweg über Einschreibung/Aktivität
   - phpunit.xml entfernt (redundant; Moodle generiert die Testsuite selbst)
+  - Vollständige Dokumentation: docs/materials, docs/prompt-templates
+  - Session-Konvention etabliert (1 Chat = 1 Session-Dokument)
+  - Moodle-Versionsmatrix auf 4.5 / 5.0 / 5.1 / 5.2 erweitert
 
 **Als nächstes geplant:**
   Phase 2 — Kursebenen-Aggregation und Verbuchung in completion_booker::book():
     - completion_completion::mark_complete() nach erfüllter Aggregation
     - Aggregationsregeln (ALL/ANY, je Kriteriumstyp) exakt wie Kern spiegeln
-    - Versionsspezifische Integrationstests (4.5 und 5.0)
+    - Versionsspezifische Integrationstests (4.5, 5.0, 5.1, 5.2)
   Phase 2 — reconcile_task für datums-/dauerbasierte Kriterien.
 
 ---
 
 ### E) Ziel dieser Sitzung
 
-Wir knüpfen an die Arbeiten an, die im aktuellen Kontext-Dokument
+Wir knüpfen an die Arbeiten an, die im aktuellen Session-Dokument
 und in der angehängten Code-Base vorliegen, und gehen, wenn der letzte
 Arbeitsschritt als vollumfänglich erfüllt angesehen wird, zum nächsten
 vorgesehenen Schritt in der Umsetzung über.
 
 Schlüssel-Entwurfsentscheidungen (nicht verändern ohne explizite Diskussion):
-  1. Lesart A: keine eigene Abschlusslogik; nur Kern-Completion-API
+  1. keine eigene Abschlusslogik; nur Kern-Completion-API
      (completion_info, criteria review, completion_completion::mark_complete).
   2. Scope-Modi: all / categories (inkl. Unterkategorien + Include-/Exclude-Tags)
      / adele (delegiert Filterdefinition an local_adele, nur wenn installiert).
@@ -80,7 +98,8 @@ Schlüssel-Entwurfsentscheidungen (nicht verändern ohne explizite Diskussion):
   5. Dedup pro (courseid,userid) je Request; queue_adhoc_task($task, true).
   6. Privacy: null_provider (kein eigener personenbezogener Datenbestand).
   7. Keine harte local_adele-Dependency; eigenständig lauffähig.
-  8. CI ohne Fremd-Plugins (--no-init + manuelles init.php); Matrix 4.5/5.0.
+  8. CI ohne Fremd-Plugins (--no-init + manuelles init.php);
+     Matrix 4.5 / 5.0 / 5.1 / 5.2.
 
 Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
   - Lang-Dateien: alphabetisch sortiert, keine Kommentar-Trennzeilen
@@ -103,9 +122,11 @@ Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
 
 - Code-Changes immer ausliefern als Patch-ZIP: eine ZIP-Datei, die NUR
   die geänderten Dateien enthält (kein .git-Ordner, keine docs/-Dateien)
+  Ausnahme: Patches, die explizit Dokumentations-Updates enthalten, dürfen docs/-
+  Dateien einschließen — dies ist dann im Patch-Namen kenntlich zu machen.
 - Patch-ZIPs erhalten einen durchnummerierten Namen (patch-0.X.YY.zip),
   die Version in version.php orientiert sich am aktuellen Datum und wird
-  mit jeder Iteration hochgezählt (Format: YYYYMMDDNN, z.B. 2026070801)
+  mit jeder Iteration hochgezählt (Format: YYYYMMDDNN, z.B. 2026070901)
 - Zu jeder Änderung eine einzeilige Kurzbeschreibung des Commits (englisch)
   sowie bis zu 5 Stichpunkte zu den vorgenommenen Änderungen.
   Diese Angaben als MD-Code DIREKT UNTER dem Download-Link der Patch-ZIP
@@ -128,7 +149,7 @@ Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
   grundsätzlich nur im Chat-Fenster ausgeliefert, nie als Download!
 
 Bevor du beginnst:
-1. Bestätige kurz, was du aus dem Kontext-Dokument und den
+1. Bestätige kurz, was du aus dem Session-Dokument und den
    Dateien verstanden hast.
 2. Benenne, falls vorhanden, Widersprüche oder fehlende
    Informationen, die du für die heutige Aufgabe brauchst.

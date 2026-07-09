@@ -5,9 +5,10 @@
 
 ---
 
-> **Status dieses Dokuments (aktualisiert):** Der finale Komponentenname ist `local_instantcoursecompletion`. Zwei Punkte sind seit der Erstfassung fixiert:
+> **Status dieses Dokuments (aktualisiert):** Der finale Komponentenname ist `local_instantcoursecompletion`. Drei Punkte sind seit der Erstfassung fixiert:
 > - **Lesart A** (§1.3) ist verbindlich: keine eigene Abschlusslogik, ausschließlich observerbasierte, frühere/eingegrenzte Auswertung der vorhandenen Moodle-Completion-Kriterien.
-> - **L-Q2**: Mindestversion **Moodle 4.5**, inkl. 5.x; **keine** Abwärtskompatibilität zu 4.1–4.4.
+> - **L-Q2**: Mindestversion **Moodle 4.5**, inkl. 5.x (getestet: 4.5, 5.0, 5.1, 5.2); **keine** Abwärtskompatibilität zu 4.1–4.4.
+> - **Session-Konvention**: Ein Claude-Chat = genau eine Session. Dokumente fortlaufend nummeriert in `docs/sessions/`.
 
 
 ## 1. Technische Einschätzung
@@ -32,11 +33,11 @@ Das Plugin schließt genau diese Lücke: Es beobachtet die Events, die einen Kur
 
 Das ist die wichtigste offene Frage vor Umsetzungsbeginn, weil sie den Umfang maßgeblich bestimmt:
 
-- **Lesart A (empfohlen, Standardannahme):** „Verbuchen" = Moodles eigenen Kursabschluss (Tabelle `course_completions`) früher und lastschonender berechnen. Das Plugin *beschleunigt und begrenzt* die vorhandene Kernmechanik, erfindet keine neue Abschlusslogik.
+- **Lesart A (verbindlich, Standardannahme):** „Verbuchen" = Moodles eigenen Kursabschluss (Tabelle `course_completions`) früher und lastschonender berechnen. Das Plugin *beschleunigt und begrenzt* die vorhandene Kernmechanik, erfindet keine neue Abschlusslogik.
 - **Lesart B:** „Verbuchen" meint eine **zusätzliche** Verbuchung außerhalb des Kerns — z. B. Meldung an ein Drittsystem/ERPNext, Zertifikatsausstellung, Einschreibung in Folgekurse, oder Fortschreibung im `local_adele`-Lernpfad.
 - **Lesart C:** Das Plugin soll Abschluss **nach eigenen Kriterien** definieren (z. B. „abgeschlossen, wenn getaggte Aktivitäten X erledigt"), unabhängig von den Kurseinstellungen.
 
-> **Wichtig:** Lesart C ist ein deutlich größeres Projekt (eigene Kriterien-Engine) und wird von diesem Blueprint bewusst *nicht* abgedeckt. Voraussetzung von Lesart A ist außerdem, dass im jeweiligen Kurs **Abschlussverfolgung aktiviert und Abschlusskriterien definiert** sind — das Plugin kann keinen Abschluss „aus dem Nichts" erzeugen, sondern nur vorhandene Kriterien früher auswerten. Diese Punkte sind vor Umsetzung mit dem Auftraggeber zu bestätigen.
+> **Entschieden:** Lesart A ist verbindlich. Lesart C ist ein deutlich größeres Projekt (eigene Kriterien-Engine) und wird von diesem Blueprint bewusst *nicht* abgedeckt. Voraussetzung von Lesart A ist außerdem, dass im jeweiligen Kurs **Abschlussverfolgung aktiviert und Abschlusskriterien definiert** sind — das Plugin kann keinen Abschluss „aus dem Nichts" erzeugen, sondern nur vorhandene Kriterien früher auswerten.
 
 ### 1.4 Machbarkeit und empfohlener Ansatz
 
@@ -58,14 +59,14 @@ Der Observer selbst tut im Web-Request nur das Nötigste (Cache-Lookup + Task ei
 | Konfiguration | `admin_settingpage`, `admin_setting_config*`, `settings.php` |
 | Kategoriebaum | `core_course_category::make_categories_list()`, Pfad-Auflösung über `course_categories.path` |
 | Caching | Cache-API (`\cache::make`, `db/caches.php`, MUC application cache) |
-| Datenschutz | `\core_privacy\...\null_provider` (das Plugin speichert i. d. R. keine personenbezogenen Daten) |
+| Datenschutz | `\core_privacy\...\null_provider` (das Plugin speichert keine personenbezogenen Daten) |
 | Sprache/Logs | `lang/en/local_instantcoursecompletion.php`, ggf. `classes/event/*` für eigene Log-Events |
 
 ### 1.6 Zentrale Risiken (und Gegenmaßnahmen)
 
 - **Event-Stürme / Doppelverarbeitung** bei vielen Aktivitätsabschlüssen im selben Request → Deduplizierung pro `(userid, courseid)` (§4.4).
 - **Observer darf nie fatal werfen** (Moodle-Vorgabe) → alles in `try/catch`, defensive Snapshots, keine schwere Logik synchron.
-- **Version-Abhängigkeit der Completion-Interna** (4.1 vs. 4.5) → nur öffentliche API-Methoden nutzen, exakte Aufrufsequenz je Zielversion durch Integrationstests absichern.
+- **Version-Abhängigkeit der Completion-Interna** (4.5 vs. 5.x) → nur öffentliche API-Methoden nutzen, exakte Aufrufsequenz je Zielversion durch Integrationstests absichern.
 - **Rückkopplung mit `local_adele`** (das ebenfalls `course_completed` beobachtet) → keine Schleifen, klare Zuständigkeit, siehe §4.6.
 - **Scope-Cache-Invalidierung** bei Kurs-/Kategorie-/Tag-Änderungen → definierte Invalidierungs-Trigger (§4.3).
 
@@ -87,11 +88,11 @@ Der Observer selbst tut im Web-Request nur das Nötigste (Cache-Lookup + Task ei
 **L-Q Nicht-funktionale Anforderungen**
 
 - **L-Q1** Die Performanz der Instanz darf nicht merklich beeinträchtigt werden (im Web-Request nur minimale, gecachte Operationen).
-- **L-Q2** Kompatibel zu den von `local_adele` unterstützten Moodle-Versionen (4.1–4.5).
+- **L-Q2** Mindestversion **Moodle 4.5** (inkl. 5.x, getestet: 4.5, 5.0, 5.1, 5.2). **Keine** Abwärtskompatibilität zu 4.1–4.4.
 - **L-Q3** Keine Änderung an Moodle-Kerndateien; ausschließlich dokumentierte APIs.
 - **L-Q4** Robustheit: Fehler in einem Ereignis dürfen weder den Nutzer-Request noch andere Observer stören.
 - **L-Q5** Nachvollziehbarkeit (optionales Logging/eigene Log-Events) und DSGVO-Konformität.
-- **L-Q6** Wartbarkeit gemäß Moodle Coding Guidelines (Code-Checker, PHPUnit, CI wie im `local_adele`-Repo vorhanden).
+- **L-Q6** Wartbarkeit gemäß Moodle Coding Guidelines (Code-Checker, PHPUnit, CI).
 
 ---
 
@@ -101,7 +102,7 @@ Der Observer selbst tut im Web-Request nur das Nötigste (Cache-Lookup + Task ei
 
 **P2 (→L-F2/L-Q3):** Standard-`settings.php` mit `admin_settingpage` unter *Local plugins*; keine Kernänderungen.
 
-**P3 (→L-F3):** Setting `scopemode` mit Optionen `all_courses | own_categories | adele`. Bei `own_categories` Mehrfachauswahl der Kategorien (Kurszweige) via `admin_setting_configmultiselect`; Unterkategorien werden über den `path` aufgelöst.
+**P3 (→L-F3):** Setting `scopemode` mit Optionen `all | categories | adele`. Bei `categories` Mehrfachauswahl der Kategorien (Kurszweige) via `admin_setting_configmultiselect`; Unterkategorien werden über den `path` aufgelöst.
 
 **P4 (→L-F3c/L-F4):** Modus `adele` liest `get_config('local_adele', …)` (`catfilter`, `includetags`, `excludetags`, `selectconfig`) und wendet dieselbe Filtersemantik an. Die Option wird nur angeboten, wenn `local_adele` installiert ist (Prüfung via `\core\plugin_manager` / Klassenexistenz).
 
@@ -111,7 +112,7 @@ Der Observer selbst tut im Web-Request nur das Nötigste (Cache-Lookup + Task ei
 
 **P7 (→L-Q5):** `null_provider` (keine eigene PII-Speicherung); optionale eigene Log-Events (`\local_instantcoursecompletion\event\completion_booked`).
 
-**P8 (→L-Q6):** PHPUnit-Unit- und -Integrationstests je Scope-Modus und Zielversion; Anbindung an bestehende `moodle-plugin-ci`.
+**P8 (→L-Q6):** PHPUnit-Unit- und -Integrationstests je Scope-Modus und Zielversion; Anbindung an `moodle-plugin-ci`. CI-Matrix: Moodle 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3 × MariaDB/PostgreSQL.
 
 **Abnahmekriterien (Auszug):** Abschluss eines getaggten Kurses wird ≤1 Cron-Intervall (bzw. sofort im Synchronmodus) verbucht; ein außerhalb des Scopes liegender Kurs wird nachweislich *nicht* durch das Plugin verbucht; Observer-Kosten im Request messbar vernachlässigbar (Profiling); keine Doppelverbuchung.
 
@@ -122,8 +123,8 @@ Der Observer selbst tut im Web-Request nur das Nötigste (Cache-Lookup + Task ei
 ### 4.1 Komponenten- und Dateistruktur
 
 ```
-local/ccobserver/
-├── version.php                     # component=local_instantcoursecompletion, requires/supported wie local_adele
+local/instantcoursecompletion/
+├── version.php                     # component, requires 4.5, supported [405,500,501,502]
 ├── settings.php                    # Admin-Settings (Scope-Modus, Kategorien, Tags, sync/async)
 ├── db/
 │   ├── events.php                  # Observer-Registrierung
@@ -155,11 +156,11 @@ local/ccobserver/
 
 `scope_resolver` liefert eine Methode `is_in_scope(int $courseid): bool` sowie `get_scope_course_ids(): array`.
 
-- **`all_courses`:** trivial `true` (sichtbare Kurse, ohne Frontpage).
-- **`own_categories`:** eigene Kategorienauswahl; Unterkategorien über `course_categories.path LIKE '%/<catid>/%'` (analog `local_adele`).
+- **`all`:** trivial `true` (sichtbare Kurse, ohne Frontpage).
+- **`categories`:** eigene Kategorienauswahl; Unterkategorien über `course_categories.path LIKE '%/<catid>/%'` (analog `local_adele`).
 - **`adele`:** liest `get_config('local_adele')` und wendet dieselbe Semantik an — Kategorien (`catfilter`), Include-/Exclude-Tags (`includetags`/`excludetags`). *Wichtig:* nur die **Filterdefinition** wird übernommen; die scope-Auflösung erfolgt über eine **eigene, leichte, systemweite** Abfrage. Die UI-orientierte `learning_path_courses::get_availablecourses()` wird bewusst **nicht** aufgerufen (sie ist nutzer-/rollengebunden — `only_subscribed` — und lädt zusätzlich Kursbilder).
 
-**Cache:** MUC-Application-Cache `scope_courseids` (auflösung → Set von Kurs-IDs oder kompakte Regelrepräsentation). Invalidierung bei: Änderung der Plugin-Settings, Änderung der `local_adele`-Settings (im `adele`-Modus), sowie bei Kurs-/Kategorie-/Tag-Änderungen (Observer auf `course_created/updated/deleted`, `course_category_*`, `tag_*` — nur Cache leeren, keine Berechnung). So kostet der Primärpfad im Request einen reinen Cache-Lookup.
+**Cache:** MUC-Application-Cache `scope_courseids` (Auflösung → Set von Kurs-IDs oder kompakte Regelrepräsentation). Invalidierung bei: Änderung der Plugin-Settings, Änderung der `local_adele`-Settings (im `adele`-Modus), sowie bei Kurs-/Kategorie-/Tag-Änderungen (Observer auf `course_created/updated/deleted`, `course_category_*`, `tag_*` — nur Cache leeren, keine Berechnung). So kostet der Primärpfad im Request einen reinen Cache-Lookup.
 
 ### 4.4 Verarbeitungsfluss (Sequenz)
 
@@ -197,14 +198,14 @@ Im **Synchronmodus** entfällt Schritt 4 des Observers; stattdessen ruft der Obs
 
 | Setting-Key | Typ | Bedeutung |
 |---|---|---|
-| `scopemode` | `configselect` | `all_courses` \| `own_categories` \| `adele` (letzteres nur bei installiertem `local_adele`) |
-| `categories` | `configmultiselect` | Kurszweige (nur relevant bei `own_categories`); Auswahl aus `make_categories_list()` |
-| `includetags` / `excludetags` | `configtextarea` (validiert) | optionale eigene Tag-Filter (nur bei `own_categories`); Validierung analog `admin_setting_course_tags` |
+| `scopemode` | `configselect` | `all` \| `categories` \| `adele` (letzteres nur bei installiertem `local_adele`) |
+| `categories` | `configmultiselect` | Kurszweige (nur relevant bei `categories`); Auswahl aus `make_categories_list()` |
+| `includetags` / `excludetags` | `configtextarea` (validiert) | optionale eigene Tag-Filter (nur bei `categories`); Validierung analog `admin_setting_course_tags` |
 | `processingmode` | `configselect` | `async` (Standard, Adhoc-Task) \| `sync` (im Request) |
 | `enablelogging` | `configcheckbox` | eigenes Log-Event bei Verbuchung |
 | `reconcile_enabled` | `configcheckbox` | optionaler scope-begrenzter Sicherheitsnetz-Cron |
 
-Sichtbarkeits-/Verfügbarkeitslogik: `adele`-Option und die Übernahme-Hinweise nur zeigen, wenn `local_adele` vorhanden ist; eigene Kategorie-/Tag-Felder nur im Modus `own_categories` relevant (Anzeige über `hide_if`).
+Sichtbarkeits-/Verfügbarkeitslogik: `adele`-Option und die Übernahme-Hinweise nur zeigen, wenn `local_adele` vorhanden ist; eigene Kategorie-/Tag-Felder nur im Modus `categories` relevant (Anzeige über `hide_if`).
 
 ### 4.6 Interoperabilität mit `local_adele`
 
@@ -227,26 +228,23 @@ Das Plugin speichert selbst keine personenbezogenen Daten (es nutzt Kern-Tabelle
 
 ### 4.9 Tests und Qualitätssicherung
 
-- **Unit:** `scope_resolver` je Modus (all/own/adele), inkl. Unterkategorie-Auflösung und Tag-Include/Exclude; Dedup-Logik.
+- **Unit:** `scope_resolver` je Modus (all/categories/adele), inkl. Unterkategorie-Auflösung und Tag-Include/Exclude; Dedup-Logik.
 - **Integration (PHPUnit, generator-basiert):** Kurs mit Abschlusskriterien anlegen, Kriterien via API erfüllen, prüfen dass `is_course_complete()` nach Task-Lauf true ist; Negativfall außerhalb Scope.
-- **Versionsmatrix:** Aufrufsequenz der Completion-API gegen 4.1 und 4.5 verifizieren.
-- **CI:** Einklinken in `moodle-plugin-ci` (wie im `local_adele`-Repo: codechecker, phpunit, phpdoc, mustache/…); Zielprofil Moodle 4.1 LTS und 4.5.
+- **Versionsmatrix:** Aufrufsequenz der Completion-API gegen 4.5, 5.0, 5.1 und 5.2 verifizieren.
+- **CI:** Einklinken in `moodle-plugin-ci`; Matrix Moodle 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3 × MariaDB/PostgreSQL.
 
 ### 4.10 Rollout und Betrieb
 
 - Auslieferung Standard-Local-Plugin (ZIP/Installer), Maturity zunächst `ALPHA`/`BETA`.
-- Empfohlene Ersteinführung: Modus `own_categories` auf einem begrenzten Zweig, `async`, Logging an → Messung, dann Ausweitung.
+- Empfohlene Ersteinführung: Modus `categories` auf einem begrenzten Zweig, `async`, Logging an → Messung, dann Ausweitung.
 - Betriebshinweis: Der reguläre Completion-Cron bleibt aktiviert (Sicherheitsnetz für zeitbasierte Kriterien); das Plugin ergänzt, ersetzt ihn nicht.
 
 ---
 
 ## 5. Offene Punkte / nächste Schritte
 
-1. **Bedeutung von „verbuchen" bestätigen** (Lesart A/B/C, §1.3) — größter Scope-Hebel.
-2. **Genutzte Abschluss-Kriterientypen** klären (Aktivität, Note, Rolle/manuell, Zeit/Datum) → bestimmt die zu beobachtenden Events und die Reichweite des `reconcile_task`.
-3. **Sync vs. async als Default** festlegen (Latenz- vs. Last-Präferenz).
-4. **Zielversionen final fixieren** (4.1 LTS? 4.5? künftig 5.x?).
-5. **local_adele-Modus:** Übernahme nur der Filterdefinition bestätigen; Verhalten bei `only_subscribed` im Hintergrundkontext festlegen.
-6. Danach: Prototyp `scope_resolver` + Observer + Adhoc-Task auf einer 4.x-Testinstanz, Profiling gegen die Performanz-Vorgabe (L-Q1).
+1. **Phase 2:** Kursebenen-Aggregation + `completion_completion::mark_complete()` in `completion_booker::book()` (versionsspezifisch, Integrationstests für 4.5 und 5.x).
+2. **Phase 2:** `reconcile_task` für datums-/dauerbasierte Kriterien.
+3. **Optional (Phase 3):** Admin-Report der beschleunigten Abschlüsse.
 
-*Alle in §1.5/§4 genannten internen Completion-Aufrufsequenzen sind vor Implementierung gegen die konkrete Zielversion zu verifizieren, da die Interna zwischen 4.1 und 4.5 abweichen können.*
+*Alle in §1.5/§4 genannten internen Completion-Aufrufsequenzen sind vor Implementierung gegen die konkrete Zielversion zu verifizieren, da die Interna zwischen 4.5 und 5.x abweichen können.*

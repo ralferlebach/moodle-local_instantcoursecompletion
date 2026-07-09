@@ -4,7 +4,8 @@
 # Triggered on push / PR to main.
 # Provides the "CI complete" status check for branch protection.
 #
-# Matrix: Moodle 4.5 · 5.0  ×  PHP 8.1 · 8.2 · 8.3  ×  mariadb · pgsql
+# Matrix: Moodle 4.5 · 5.0 · 5.1 · 5.2  ×  PHP 8.1 · 8.2 · 8.3  ×  mariadb · pgsql
+#   Note: PHP 8.1 is excluded for all Moodle 5.x branches (minimum PHP 8.2).
 #
 # The plugin has NO external plugin dependencies; nothing extra is installed.
 ##############################################################################
@@ -39,13 +40,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Moodle 4.5.
+          # Moodle 4.5 (PHP 8.1, 8.2, 8.3).
           - { moodle-branch: MOODLE_405_STABLE, php: '8.1', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle } }
           - { moodle-branch: MOODLE_405_STABLE, php: '8.2', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle } }
           - { moodle-branch: MOODLE_405_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle } }
           # Moodle 5.0 (requires PHP 8.2+).
           - { moodle-branch: MOODLE_500_STABLE, php: '8.2', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle } }
           - { moodle-branch: MOODLE_500_STABLE, php: '8.3', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle } }
+          # Moodle 5.1 (requires PHP 8.2+).
+          - { moodle-branch: MOODLE_501_STABLE, php: '8.2', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle } }
+          - { moodle-branch: MOODLE_501_STABLE, php: '8.3', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle } }
+          # Moodle 5.2 (requires PHP 8.2+).
+          - { moodle-branch: MOODLE_502_STABLE, php: '8.2', db: { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle, name: moodle } }
+          - { moodle-branch: MOODLE_502_STABLE, php: '8.3', db: { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root,   name: moodle } }
 
     services:
       postgres:

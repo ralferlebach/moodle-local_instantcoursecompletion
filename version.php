@@ -25,11 +25,11 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component    = 'local_instantcoursecompletion';
-$plugin->version      = 2026070801;
+$plugin->version      = 2026070901;
 $plugin->requires     = 2024100700;   // Moodle 4.5.0 — hard minimum.
-$plugin->supported    = [405, 500];   // Tested on Moodle 4.5 and 5.0; raise the upper bound as new majors are added to CI.
+$plugin->supported    = [405, 500, 501, 502];   // Tested on Moodle 4.5, 5.0, 5.1, 5.2.
 $plugin->maturity     = MATURITY_ALPHA;
-$plugin->release      = '0.1.0';
+$plugin->release      = '0.2.0';
 
 // No hard dependencies. Integration with local_adele is OPTIONAL and detected at
 // runtime (see classes/scope_resolver.php); it is deliberately NOT declared here so
