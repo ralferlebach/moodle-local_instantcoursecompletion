@@ -8,6 +8,157 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-09
+
+Phase C des externen Reviews: der Task-Fan-out bei gemeinsamem Abschlussdatum ist
+beseitigt, und der Booker baut den Kurskontext einmal je Stapel statt einmal je Nutzer.
+
+### Added
+
+- **`course_booker`** (neu): Buchungskontext für einen Kurs. Kursdatensatz,
+  `completion_info` und Kriterienliste werden **einmal** gelesen und für jeden Nutzer
+  wiederverwendet. Genau dieses Wiederaufbauen je Nutzer machte aus einem Stapel von
+  500 Lernenden einige tausend Abfragen — `get_criteria()` und `get_fast_modinfo()`
+  liefen bisher pro Person erneut.
+- **`book_due_completion_batch_task`** (neu): verbucht eine Seite der Kohorte, für die
+  ein Datums-Kriterium fällig geworden ist, und reiht bei voller Seite die eigene
+  Fortsetzung ein. Die Seitenposition (`lastuserid`) ist Teil des Dedup-Schlüssels,
+  weshalb eine Fortsetzung neben dem Kopf-Task existieren kann, den ein späterer
+  Discovery-Lauf neu plant.
+- Einstellung `batchsize` (Default 500).
+
+### Changed — Fan-out
+
+- **Ein Datums-Kriterium erzeugt genau einen Task, nicht einen je Lernendem.**
+  Bei 50.000 Teilnehmenden und gemeinsamem Abschlussdatum entstanden bisher 50.000
+  Zeilen in `{task_adhoc}`, alle mit derselben Fälligkeit. Jetzt: ein Kopf-Task und,
+  bei Bedarf, `⌈50.000 / batchsize⌉` Fortsetzungen, die nacheinander laufen.
+  Der Jitter aus 0.4.3 wird damit für Datums-Kriterien überflüssig.
+- **Die Discovery prüft für Datums-Kriterien keine Einschreibungszeile mehr.** Statt
+  50.000 Zeilen zu lesen fragt sie über `due_scheduler::date_due_user_ids(..., 1)` eine
+  einzige Zeile ab: schuldet niemand mehr das Kriterium, wird kein Stapel geplant.
+  Ein Kurs mit Abschlussdatum aus 2020 erzeugt also nicht stündlich einen leeren Task.
+- **Dauer-Kriterien bleiben nutzerweise geplant.** Ihre Fälligkeiten unterscheiden sich
+  je Person und verteilen sich von selbst über den Horizont; ein Stapel hätte dort
+  keinen gemeinsamen Zeitpunkt zu bündeln. Cursor und Budget der Discovery greifen
+  weiterhin genau für diesen Pfad.
+- `completion_booker` ist zur Fassade über `course_booker` geworden. Alle Aufrufer
+  (`book_completion_task`, `book_due_completion_task`) bleiben unverändert.
+- `reconcile_task::process_course()` öffnet einen `course_booker` je Kurs statt je
+  Nutzer einen neuen `completion_info`-Baum.
+
+### Fixed
+
+- **PHPUnit: `Unexpected debugging() call` in `completion_booker_test`.** Das in 0.4.7
+  eingeführte `role_assign()` im Fixture-Trait feuert `role_assigned`; `local_adele`
+  beobachtet dieses Ereignis und ruft `require_phpunit_isolation()`. Behoben durch
+  `resetDebugging()` unmittelbar nach der Rollenzuweisung — dasselbe Muster, das schon
+  nach `mark_complete()` nötig ist.
+
+### Added — Tests
+
+- `book_due_completion_batch_task`: einzelne Seite verbucht die ganze Kohorte; volle
+  Seite reiht eine Fortsetzung mit korrektem `lastuserid` ein; drei Seiten verbuchen
+  fünf Lernende genau einmal; leeres Kriterium ist ein No-op; Lehrende werden nicht
+  verbucht; der Wirkungsbereich wird vor der Ausführung erneut geprüft; ein Stapel wird
+  nicht doppelt eingereiht, eine Fortsetzung kollidiert nicht mit ihrem Kopf.
+  Ausgeführt wird über `get_next_adhoc_task()` + `adhoc_task_complete()` — `execute()`
+  allein lässt den Datensatz in der Queue und macht Kopf und Fortsetzung ununterscheidbar.
+- `discover_due_criteria_task` neu aufgeteilt: Datums-Kriterien werden gegen
+  `queued_batch_tasks()` geprüft, die Cursor- und Budget-Regressionen aus 0.4.7 laufen
+  jetzt über Dauer-Kriterien, weil nur die noch nutzerweise geplant werden.
+
+### Offen (Phase D–E)
+
+- Lock um `book()`, Fehlerzähler, Einstellungsvalidierung, `get_by_name_bulk()`,
+  begrenztes Fan-out abhängiger Kurse.
+- README-Abschnitt *Compatibility Logic*, `composer.json`, Lasttests.
+
+## [0.4.8] - 2026-07-09
+
+Phase B des externen Reviews: Queue-Korrektheit ausschliesslich über Core-APIs, ohne
+eigene Planungstabelle und damit ohne zusätzliche Privacy-Behandlung.
+
+### Fixed — Unterstützte API für Zukunfts-Tasks (B1)
+
+- `queue_adhoc_task($task, $checkforexisting = true)` ist im Core-Docblock ausdrücklich
+  auf ASAP-Tasks beschränkt. Die Fälligkeits-Tasks nutzen jetzt
+  **`reschedule_or_queue_adhoc_task()`**.
+- **`duetime` ist aus der `customdata` verschwunden**, an seine Stelle tritt `criteriaid`.
+  Der Dedup-Schlüssel des Cores ist `classname + component + customdata + userid`;
+  `nextruntime` gehört nicht dazu. Verschiebt sich ein Einschreibebeginn, aktualisiert
+  `reschedule_or_queue_adhoc_task()` die Laufzeit des vorhandenen Tasks, statt einen
+  zweiten mit neuer Fälligkeit daneben zu legen. Der in 0.4.3 bewusst offengelassene
+  Stale-Task ist damit strukturell ausgeschlossen.
+- `criteriaid` hält zugleich zwei Zeitkriterien desselben Kurses auseinander, die für
+  denselben Nutzer zu verschiedenen Zeitpunkten fällig werden.
+
+### Removed — Direkter `{task_adhoc}`-Zugriff (B2)
+
+- **`load_pending_tasks()` ist ersatzlos entfallen**, samt `MAX_PENDING_PREFETCH`,
+  `$pending` und `$prefetchcomplete`. Der Vorabruf war unter Retry-Backoff falsch: ein
+  fehlgeschlagener Task bekommt vom Core ein verschobenes `nextruntime`, fiel aus dem
+  Horizont-Fenster des Hashsets und wurde dupliziert. Das Plugin liest die Tabelle jetzt
+  nirgends mehr — nur `db/upgrade.php` räumt einmalig auf.
+
+### Fixed — Kosten des Dedup-Vergleichs
+
+- **`set_userid()` ist zurück.** `{task_adhoc}` besitzt keinen Index auf `customdata`,
+  wohl aber einen auf `userid` (Foreign Key `useriduser`). Ohne gesetzte `userid` wäre
+  `get_queued_adhoc_task_record()` ein Full Scan **pro Enqueue**; bei 5.000 geprüften
+  Zeilen je Discovery-Lauf ist das untragbar. Genau dafür hängt der Core die
+  `userid`-Bedingung an. Gilt auch für den ASAP-Task des Observers.
+- Die Kehrseite, wegen der `set_userid()` in 0.4.0 entfiel: `queue_adhoc_task()` ruft
+  `\core_user::require_active_user($user, true, true)` und wirft bei gelöschten,
+  gesperrten oder `nologin`-Konten. Abgesichert auf drei Ebenen:
+  `JOIN {user} u ON u.deleted = 0 AND u.suspended = 0` in beiden Discovery-Abfragen,
+  `due_scheduler::user_can_own_a_task()` im Observer-Pfad, und ein `try`/`catch` in
+  `due_scheduler::queue()`, das einen nicht planbaren Nutzer überspringt statt den Lauf
+  abzubrechen.
+- Der Task läuft damit wieder unter der Identität der lernenden Person. Das Ereignis
+  `course_completed` trägt jetzt dieselbe ID in `userid` wie in `relateduserid`, statt
+  der des Cron-Administrators.
+
+### Added — Serialisierung der beiden Planer (B3)
+
+- **`due_scheduler::course_lock()`** über `\core\lock\lock_config`, Schlüssel
+  `course_<id>`. `reschedule_or_queue_adhoc_task()` liest und schreibt nicht atomar;
+  Discovery-Task und Einschreibungs-Observer planen denselben Kurs und werden nun
+  getrennt statt einem Rennen überlassen.
+  - Discovery: `get_lock(0)`. Ist der Kurs belegt, bricht der Lauf ab, **ohne den Cursor
+    fortzuschreiben** — der nächste Lauf nimmt ihn wieder auf.
+  - Observer: `get_lock(2)`. Bekommt er ihn nicht, plant er nicht; die Discovery holt
+    den Nutzer innerhalb ihres stündlichen Intervalls nach.
+- Der Lock trennt Prozesse, nicht Aufrufstellen: sowohl das PostgreSQL-Advisory-Lock als
+  auch MySQLs `GET_LOCK` sind innerhalb einer Datenbanksitzung wiedereintrittsfähig.
+  Cron und Webrequest teilen sich keine — dort liegt das Rennen. Aus demselben Grund
+  gibt es dafür keinen Unit-Test; ein solcher wäre grün, ohne etwas zu prüfen.
+
+### Changed
+
+- `mtrace()` des Discovery-Tasks meldet `planned` statt `queued`.
+  `reschedule_or_queue_adhoc_task()` gibt `void` zurück, und `task_is_scheduled()` ist
+  `protected` — ob ein Task neu war oder verschoben wurde, ist über Core-APIs nicht
+  feststellbar. Der Fortschritt hängt seit 0.4.7 ohnehin an `scanned`.
+- `db/upgrade.php` verwirft die anstehenden `book_due_completion_task`-Zeilen der alten
+  `customdata`-Form. Ohne das liefen sie neben ihren Nachfolgern her. Die Discovery
+  plant sie binnen eines stündlichen Laufs neu.
+
+### Added — Tests
+
+- `due_scheduler`: verschobener Einschreibebeginn verschiebt den vorhandenen Task,
+  statt einen zweiten anzulegen; gesperrtes Konto wird nicht geplant; Lock-Round-Trip.
+- `discover_due_criteria_task`: dasselbe Reschedule-Verhalten über den Task-Pfad;
+  gesperrtes Konto wird nicht geplant; Fälligkeit wird in `nextruntime` geprüft,
+  nicht mehr in der `customdata`.
+
+### Offen (Phase C–E)
+
+- Batch-Task statt eines Ad-hoc-Tasks je Nutzer.
+- Locks um `book()`, Fehlerzähler, Einstellungsvalidierung, `get_by_name_bulk()`,
+  begrenztes Fan-out abhängiger Kurse.
+- README-Abschnitt *Compatibility Logic*, `composer.json`.
+
 ## [0.4.7] - 2026-07-09
 
 Phase A des externen Reviews: Fortschrittsgarantie für beide Scheduled Tasks und

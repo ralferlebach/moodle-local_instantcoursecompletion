@@ -29,6 +29,8 @@
  * @return bool
  */
 function xmldb_local_instantcoursecompletion_upgrade($oldversion) {
+    global $DB;
+
     if ($oldversion < 2026070911) {
         // The synchronous processing mode was removed; drop its orphaned setting.
         unset_config('processingmode', 'local_instantcoursecompletion');
@@ -42,6 +44,18 @@ function xmldb_local_instantcoursecompletion_upgrade($oldversion) {
         unset_config('reconcilecursor', 'local_instantcoursecompletion');
 
         upgrade_plugin_savepoint(true, 2026070913, 'local', 'instantcoursecompletion');
+    }
+
+    if ($oldversion < 2026070914) {
+        // The custom data of the due-booking task changed from {courseid, duetime, userid}
+        // to {courseid, criteriaid, userid}. Queued tasks in the old shape would not be
+        // recognised as duplicates and would run alongside their replacements. Discovery
+        // re-plans them within one run of its hourly schedule.
+        $DB->delete_records('task_adhoc', [
+            'classname' => '\\local_instantcoursecompletion\\task\\book_due_completion_task',
+        ]);
+
+        upgrade_plugin_savepoint(true, 2026070914, 'local', 'instantcoursecompletion');
     }
 
     return true;

@@ -40,15 +40,6 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
 
-    /** @var int Upper bound on the pending tasks pre-loaded for de-duplication. */
-    protected const MAX_PENDING_PREFETCH = 50000;
-
-    /** @var array<string, bool> Custom data of the booking tasks already queued. */
-    protected $pending = [];
-
-    /** @var bool Whether $pending holds every queued task inside the horizon. */
-    protected $prefetchcomplete = true;
-
     /**
      * Human-readable task name for the admin UI.
      *
@@ -91,10 +82,8 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             return;
         }
 
-        $this->load_pending_tasks($horizon);
-
         $scanned = 0;
-        $queued = 0;
+        $planned = 0;
         $exhausted = false;
 
         foreach ($courseids as $courseid) {
@@ -108,12 +97,24 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
                 continue;
             }
 
+            // An enrolment observer may be planning this course right now.
+            $lock = due_scheduler::course_lock($courseid, 0);
+            if (!$lock) {
+                $exhausted = true;
+                break;
+            }
+
             $resume = ($courseid === $cursor['courseid'])
                 ? [$cursor['criteriaid'], $cursor['lastuserid']]
                 : [0, 0];
 
-            $result = $this->schedule_course($courseid, $resume[0], $resume[1], $now, $horizon, $budget - $scanned);
-            $queued += $result['queued'];
+            try {
+                $result = $this->schedule_course($courseid, $resume[0], $resume[1], $now, $horizon, $budget - $scanned);
+            } finally {
+                $lock->release();
+            }
+
+            $planned += $result['planned'];
             $scanned += $result['scanned'];
 
             if ($result['stopped'] !== null) {
@@ -134,7 +135,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             mtrace('local_instantcoursecompletion discover_due_criteria_task:'
                 . ' courses=' . count($courseids)
                 . ' scanned=' . $scanned
-                . ' queued=' . $queued);
+                . ' planned=' . $planned);
         }
     }
 
@@ -171,38 +172,6 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             'criteriaid' => $criteriaid,
             'lastuserid' => $lastuserid,
         ]), self::COMPONENT);
-    }
-
-    /**
-     * Read the booking tasks already queued inside the horizon into memory.
-     *
-     * One query replaces the one that \core\task\manager would otherwise run per
-     * enqueue. The read is capped, because the pending queue grows with the number of
-     * due bookings and not with anything this task controls. When the cap is reached
-     * the set is incomplete and the queue itself is asked instead.
-     *
-     * @param int $horizon Latest due time being planned for.
-     * @return void
-     */
-    protected function load_pending_tasks(int $horizon): void {
-        global $DB;
-
-        $customdata = $DB->get_fieldset_sql(
-            'SELECT customdata
-               FROM {task_adhoc}
-              WHERE classname = :classname AND component = :component AND nextruntime <= :latest
-           ORDER BY id ASC',
-            [
-                'classname' => '\\' . book_due_completion_task::class,
-                'component' => self::COMPONENT,
-                'latest' => $horizon + due_scheduler::JITTER_WINDOW,
-            ],
-            0,
-            self::MAX_PENDING_PREFETCH
-        );
-
-        $this->pending = array_fill_keys($customdata, true);
-        $this->prefetchcomplete = count($customdata) < self::MAX_PENDING_PREFETCH;
     }
 
     /**
@@ -246,7 +215,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * @param int $now              Current time.
      * @param int $horizon          Latest due time being planned for.
      * @param int $budget           Maximum number of enrolment rows to examine.
-     * @return array{queued: int, scanned: int, stopped: null|int[]} Position to resume at, or null when done.
+     * @return array{planned: int, scanned: int, stopped: null|int[]} Position to resume at, or null when done.
      */
     protected function schedule_course(
         int $courseid,
@@ -256,7 +225,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         int $horizon,
         int $budget
     ): array {
-        $queued = 0;
+        $planned = 0;
         $scanned = 0;
 
         foreach (due_scheduler::time_criteria($courseid) as $criterion) {
@@ -267,20 +236,20 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             $fromuserid = ($criteriaid === $resumecriteriaid) ? $resumeuserid : 0;
 
             if ($scanned >= $budget) {
-                return ['queued' => $queued, 'scanned' => $scanned, 'stopped' => [$criteriaid, $fromuserid]];
+                return ['planned' => $planned, 'scanned' => $scanned, 'stopped' => [$criteriaid, $fromuserid]];
             }
 
             $remaining = $budget - $scanned;
             $result = $this->schedule_criterion($courseid, $criterion, $fromuserid, $now, $horizon, $remaining);
-            $queued += $result['queued'];
+            $planned += $result['planned'];
             $scanned += $result['scanned'];
 
             if ($result['more']) {
-                return ['queued' => $queued, 'scanned' => $scanned, 'stopped' => [$criteriaid, $result['lastuserid']]];
+                return ['planned' => $planned, 'scanned' => $scanned, 'stopped' => [$criteriaid, $result['lastuserid']]];
             }
         }
 
-        return ['queued' => $queued, 'scanned' => $scanned, 'stopped' => null];
+        return ['planned' => $planned, 'scanned' => $scanned, 'stopped' => null];
     }
 
     /**
@@ -292,7 +261,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * @param int       $now        Current time.
      * @param int       $horizon    Latest due time being planned for.
      * @param int       $limit      Maximum number of enrolment rows to examine.
-     * @return array{queued: int, scanned: int, lastuserid: int, more: bool}
+     * @return array{planned: int, scanned: int, lastuserid: int, more: bool}
      */
     protected function schedule_criterion(
         int $courseid,
@@ -304,25 +273,36 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     ): array {
         global $DB;
 
-        $idle = ['queued' => 0, 'scanned' => 0, 'lastuserid' => $fromuserid, 'more' => false];
-        $isdate = (int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE;
+        $criteriaid = (int)$criterion->id;
+        $idle = ['planned' => 0, 'scanned' => 0, 'lastuserid' => $fromuserid, 'more' => false];
         $enrolperiod = (int)$criterion->enrolperiod;
         $duetime = (int)$criterion->timeend;
 
-        if ($isdate) {
+        if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
+            // The whole course falls due at one instant, so it gets one paged batch task
+            // rather than one task per learner. No enrolment row is examined here.
             if ($duetime <= 0 || $duetime > $horizon) {
                 return $idle;
             }
-            [$sql, $params] = $this->date_user_sql($courseid, (int)$criterion->id, $fromuserid);
-        } else {
-            if ($enrolperiod <= 0) {
-                return $idle;
+
+            // Ask for a single row: a criterion nobody owes any more needs no batch.
+            if (empty(due_scheduler::date_due_user_ids($courseid, $criteriaid, 0, 1))) {
+                return ['planned' => 0, 'scanned' => 1, 'lastuserid' => 0, 'more' => false];
             }
-            $latest = $horizon - $enrolperiod;
-            [$sql, $params] = $this->duration_user_sql($courseid, (int)$criterion->id, $fromuserid, $latest);
+
+            $planned = due_scheduler::queue_batch($courseid, $criteriaid, $duetime) ? 1 : 0;
+
+            return ['planned' => $planned, 'scanned' => 1, 'lastuserid' => 0, 'more' => false];
         }
 
-        $queued = 0;
+        // A duration criterion falls due per learner, so it is planned per learner.
+        if ($enrolperiod <= 0) {
+            return $idle;
+        }
+        $latest = $horizon - $enrolperiod;
+        [$sql, $params] = $this->duration_user_sql($courseid, $criteriaid, $fromuserid, $latest);
+
+        $planned = 0;
         $scanned = 0;
         $lastuserid = $fromuserid;
 
@@ -330,45 +310,16 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         foreach ($recordset as $record) {
             $scanned++;
             $lastuserid = (int)$record->userid;
-            $due = $isdate ? $duetime : (int)$record->timeenrolled + $enrolperiod;
+            $due = (int)$record->timeenrolled + $enrolperiod;
 
-            if (due_scheduler::queue($courseid, $lastuserid, $due, $now, $this->pending, !$this->prefetchcomplete)) {
-                $queued++;
+            if (due_scheduler::queue($courseid, $criteriaid, $lastuserid, $due, $now)) {
+                $planned++;
             }
         }
         $recordset->close();
 
         // A full page means there may be more rows behind it.
-        return ['queued' => $queued, 'scanned' => $scanned, 'lastuserid' => $lastuserid, 'more' => $scanned >= $limit];
-    }
-
-    /**
-     * Tracked users of a course who still owe the given date criterion, after $fromuserid.
-     *
-     * @param int $courseid   Course ID.
-     * @param int $criteriaid Criterion ID.
-     * @param int $fromuserid Only users with a higher ID are returned.
-     * @return array{0: string, 1: array} SQL and parameters.
-     */
-    protected function date_user_sql(int $courseid, int $criteriaid, int $fromuserid): array {
-        $context = \context_course::instance($courseid);
-        [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
-        $params['courseid'] = $courseid;
-        $params['criteriaid'] = $criteriaid;
-        $params['fromuserid'] = $fromuserid;
-
-        $sql = "SELECT enrolled.id AS userid
-                  FROM ($enrolledsql) enrolled
-             LEFT JOIN {course_completions} cco
-                    ON cco.userid = enrolled.id AND cco.course = :courseid
-             LEFT JOIN {course_completion_crit_compl} ccc
-                    ON ccc.userid = enrolled.id AND ccc.criteriaid = :criteriaid
-                 WHERE (cco.timecompleted IS NULL OR cco.timecompleted = 0)
-                   AND ccc.id IS NULL
-                   AND enrolled.id > :fromuserid
-              ORDER BY enrolled.id ASC";
-
-        return [$sql, $params];
+        return ['planned' => $planned, 'scanned' => $scanned, 'lastuserid' => $lastuserid, 'more' => $scanned >= $limit];
     }
 
     /**
@@ -398,6 +349,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
         $sql = "SELECT enrolled.id AS userid, $started AS timeenrolled
                   FROM ($enrolledsql) enrolled
+                  JOIN {user} u ON u.id = enrolled.id AND u.deleted = 0 AND u.suspended = 0
                   JOIN {user_enrolments} ue ON ue.userid = enrolled.id
                   JOIN {enrol} e ON e.id = ue.enrolid AND e.courseid = :courseid
              LEFT JOIN {course_completions} cco

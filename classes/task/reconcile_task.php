@@ -24,7 +24,7 @@
 
 namespace local_instantcoursecompletion\task;
 
-use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\course_booker;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -205,6 +205,12 @@ class reconcile_task extends \core\task\scheduled_task {
     protected function process_course(int $courseid, int $fromuserid, int $budget): array {
         global $DB;
 
+        // The course, its completion_info and its criteria are read once for the slice.
+        $booker = course_booker::for_course($courseid);
+        if ($booker === null) {
+            return ['scanned' => 0, 'booked' => 0, 'failed' => 0, 'lastuserid' => $fromuserid, 'more' => false];
+        }
+
         $context = \context_course::instance($courseid);
         [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
         $params['courseid'] = $courseid;
@@ -229,7 +235,7 @@ class reconcile_task extends \core\task\scheduled_task {
             $lastuserid = (int)$record->userid;
 
             try {
-                if (completion_booker::book($courseid, $lastuserid)) {
+                if ($booker->book($lastuserid)) {
                     $booked++;
                 }
             } catch (\Throwable $e) {

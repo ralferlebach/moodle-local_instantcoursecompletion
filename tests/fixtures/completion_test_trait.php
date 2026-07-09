@@ -24,6 +24,7 @@
 
 namespace local_instantcoursecompletion;
 
+use local_instantcoursecompletion\task\book_due_completion_batch_task;
 use local_instantcoursecompletion\task\book_due_completion_task;
 
 /**
@@ -62,6 +63,54 @@ trait completion_test_trait {
         }
         sort($userids);
         return $userids;
+    }
+
+    /**
+     * Reset the criteria index and switch due scheduling on for the whole site.
+     *
+     * @return void
+     */
+    protected function enable_due_scheduling(): void {
+        criteria_index::purge();
+        set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
+        set_config('schedulingenabled', 1, 'local_instantcoursecompletion');
+    }
+
+    /**
+     * Batched due-booking tasks currently queued.
+     *
+     * @return \core\task\adhoc_task[]
+     */
+    protected function queued_batch_tasks(): array {
+        return \core\task\manager::get_adhoc_tasks(book_due_completion_batch_task::class);
+    }
+
+    /**
+     * The single queued batched due-booking task.
+     *
+     * @return \core\task\adhoc_task
+     */
+    protected function single_queued_batch_task(): \core\task\adhoc_task {
+        $tasks = $this->queued_batch_tasks();
+        $this->assertCount(1, $tasks);
+        return reset($tasks);
+    }
+
+    /**
+     * Assert that a task runs no earlier than its due time and inside the jitter window.
+     *
+     * The due time lives in nextruntime, not in the custom data: it must not take part
+     * in the de-duplication key, or a moved enrolment start would leave a stale twin.
+     *
+     * @param \core\task\adhoc_task $task    The queued task.
+     * @param int                    $duetime The moment the criterion falls due.
+     * @return void
+     */
+    protected function assert_due_at(\core\task\adhoc_task $task, int $duetime): void {
+        $nextruntime = (int)$task->get_next_run_time();
+
+        $this->assertGreaterThanOrEqual($duetime, $nextruntime);
+        $this->assertLessThan($duetime + due_scheduler::JITTER_WINDOW, $nextruntime);
     }
 
     /**
@@ -115,6 +164,10 @@ trait completion_test_trait {
         if ($rolename !== '') {
             $roleid = $DB->get_field('role', 'id', ['shortname' => $rolename], MUST_EXIST);
             role_assign($roleid, (int)$user->id, \context_course::instance((int)$course->id)->id);
+
+            // role_assign() fires role_assigned; other installed plugins observe it and
+            // emit debugging under PHPUnit. Their noise must not fail our assertions.
+            $this->resetDebugging();
         }
     }
 

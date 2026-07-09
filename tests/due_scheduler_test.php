@@ -70,8 +70,9 @@ final class due_scheduler_test extends \advanced_testcase {
 
         $this->assertSame(1, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
 
-        $duetime = (int)$this->single_queued_task()->get_custom_data()->duetime;
-        $this->assertSame($timestart + DAYSECS * 3, $duetime);
+        $task = $this->single_queued_task();
+        $this->assert_due_at($task, $timestart + DAYSECS * 3);
+        $this->assertSame((int)$user->id, (int)$task->get_custom_data()->userid);
     }
 
     /**
@@ -87,7 +88,7 @@ final class due_scheduler_test extends \advanced_testcase {
         $this->enrol_user_direct($course, $user);
 
         $this->assertSame(1, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
-        $this->assertSame($duetime, (int)$this->single_queued_task()->get_custom_data()->duetime);
+        $this->assert_due_at($this->single_queued_task(), $duetime);
     }
 
     /**
@@ -230,6 +231,9 @@ final class due_scheduler_test extends \advanced_testcase {
     /**
      * Calling twice does not queue the same booking twice.
      *
+     * The queue itself decides: an identical class, component, custom data and user
+     * collapse into the task that is already there.
+     *
      * @return void
      */
     public function test_schedule_user_is_idempotent(): void {
@@ -238,9 +242,66 @@ final class due_scheduler_test extends \advanced_testcase {
         $this->add_date_criterion($course, time() + DAYSECS);
         $this->enrol_user_direct($course, $user);
 
-        $this->assertSame(1, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
-        $this->assertSame(0, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
+        due_scheduler::schedule_user((int)$course->id, (int)$user->id);
+        due_scheduler::schedule_user((int)$course->id, (int)$user->id);
+
         $this->assertCount(1, $this->queued_tasks());
+    }
+
+    /**
+     * A moved enrolment start moves the existing task instead of adding a second one.
+     *
+     * @return void
+     */
+    public function test_schedule_user_reschedules_a_moved_due_time(): void {
+        global $DB;
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $timestart = time() - DAYSECS;
+        $this->add_duration_criterion($course, DAYSECS * 3);
+        $this->enrol_user_direct($course, $user, $timestart, $timestart);
+
+        due_scheduler::schedule_user((int)$course->id, (int)$user->id);
+        $this->assert_due_at($this->single_queued_task(), $timestart + DAYSECS * 3);
+
+        // The administrator corrects the enrolment start by one day.
+        $moved = $timestart + DAYSECS;
+        $DB->set_field('user_enrolments', 'timestart', $moved, ['userid' => (int)$user->id]);
+
+        due_scheduler::schedule_user((int)$course->id, (int)$user->id);
+
+        $this->assertCount(1, $this->queued_tasks());
+        $this->assert_due_at($this->single_queued_task(), $moved + DAYSECS * 3);
+    }
+
+    /**
+     * A suspended account cannot own an ad-hoc task and is never planned.
+     *
+     * @return void
+     */
+    public function test_schedule_user_skips_suspended_users(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user(['suspended' => 1]);
+        $this->add_date_criterion($course, time() + DAYSECS);
+        $this->enrol_user_direct($course, $user);
+
+        $this->assertSame(0, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
+        $this->assertCount(0, $this->queued_tasks());
+    }
+
+    /**
+     * The course lock can be taken and released.
+     *
+     * @return void
+     */
+    public function test_course_lock_round_trip(): void {
+        $course = $this->getDataGenerator()->create_course();
+
+        $lock = due_scheduler::course_lock((int)$course->id, 0);
+
+        $this->assertInstanceOf(\core\lock\lock::class, $lock);
+        $this->assertTrue($lock->release());
     }
 
     /**

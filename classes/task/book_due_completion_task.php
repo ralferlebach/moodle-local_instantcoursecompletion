@@ -43,9 +43,10 @@ class book_due_completion_task extends \core\task\adhoc_task {
     /**
      * Book the completion for the scheduled course and user.
      *
-     * Expected custom data: courseid, duetime and userid, all integers. The due time
-     * is part of the de-duplication key and is not read here; the criteria are
-     * re-evaluated from their own data sources.
+     * Expected custom data: courseid, criteriaid and userid, all integers. The criterion
+     * identifies which due time this task waits for and keeps two criteria of the same
+     * course from collapsing into one task; it is not read here, because the booker
+     * re-evaluates every criterion from its own data source anyway.
      *
      * @return void
      */

@@ -88,48 +88,6 @@ class observer {
     }
 
     /**
-     * Plan due bookings for a newly enrolled user.
-     *
-     * @param \core\event\user_enrolment_created $event The triggering event.
-     * @return void
-     */
-    public static function user_enrolment_created(\core\event\user_enrolment_created $event): void {
-        self::schedule_due_bookings((int)$event->courseid, (int)$event->relateduserid);
-    }
-
-    /**
-     * Re-plan due bookings after an enrolment changed.
-     *
-     * A changed start date moves the due time of a duration criterion. The task planned
-     * for the old due time stays queued and ends without effect, because it re-evaluates
-     * the criteria rather than trusting its own custom data.
-     *
-     * @param \core\event\user_enrolment_updated $event The triggering event.
-     * @return void
-     */
-    public static function user_enrolment_updated(\core\event\user_enrolment_updated $event): void {
-        self::schedule_due_bookings((int)$event->courseid, (int)$event->relateduserid);
-    }
-
-    /**
-     * Plan the time-based bookings of one user, swallowing any failure.
-     *
-     * @param int $courseid Affected course ID.
-     * @param int $userid   Affected user ID.
-     * @return void
-     */
-    protected static function schedule_due_bookings(int $courseid, int $userid): void {
-        try {
-            due_scheduler::schedule_user($courseid, $userid);
-        } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: due scheduling failed: ' . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
-        }
-    }
-
-    /**
      * Purge both scope caches after a category tree or tag change.
      *
      * @param \core\event\base $event The triggering event.
@@ -238,14 +196,19 @@ class observer {
             }
             self::$seen[$key] = true;
 
-            // Booking is a system operation; the affected user travels in the custom data.
             $task = new book_completion_task();
             $task->set_custom_data((object)[
                 'courseid' => $courseid,
                 'userid' => $userid,
             ]);
 
-            // The second argument makes the queue collapse identical pending tasks.
+            // The user is attached so that the de-duplication lookup can use the indexed
+            // userid column; customdata carries no index and would be scanned in full.
+            // queue_adhoc_task() rejects users that cannot own a task; the catch below
+            // turns that into a skipped booking rather than a failed page load.
+            $task->set_userid($userid);
+
+            // This is an ASAP task, the only kind $checkforexisting is documented for.
             \core\task\manager::queue_adhoc_task($task, true);
         } catch (\Throwable $e) {
             debugging(

@@ -120,6 +120,15 @@ if ($hassiteconfig) {
         $settings->hide_if($component . '/schedulinghorizon', $component . '/schedulingenabled', 'notchecked');
 
         $settings->add(new admin_setting_configtext(
+            $component . '/batchsize',
+            get_string('setting:batchsize', $component),
+            get_string('setting:batchsize_desc', $component),
+            500,
+            PARAM_INT
+        ));
+        $settings->hide_if($component . '/batchsize', $component . '/schedulingenabled', 'notchecked');
+
+        $settings->add(new admin_setting_configtext(
             $component . '/maxtasksperrun',
             get_string('setting:maxtasksperrun', $component),
             get_string('setting:maxtasksperrun_desc', $component),
