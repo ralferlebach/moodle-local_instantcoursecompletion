@@ -3,7 +3,15 @@
 #
 # Triggered on push / PR to any branch EXCEPT main (dev workflow).
 #
-# Matrix: Moodle 4.5 · 5.0  ×  PHP 8.1 · 8.2 · 8.3  ×  mariadb · pgsql
+# Progressive PHP × DB matrix (Session 003):
+#   Moodle 4.5  PHP 8.2 + 8.3  ×  MariaDB 10.11 + PostgreSQL 15  (classic)
+#   Moodle 5.0  PHP 8.3 + 8.4  ×  MariaDB 10.11 + PostgreSQL 15  (classic)
+#   Moodle 5.1  PHP 8.3 + 8.4  ×  MariaDB 11.4  + PostgreSQL 17  (modern)
+#   Moodle 5.2  PHP 8.4 + 8.5  ×  MariaDB 11.4  + PostgreSQL 17  (modern)
+#
+# Behat: Selenium is started as a GHA service (pre-pulled, no runtime docker
+# pull). The PHP built-in web server is started manually before Behat init.
+# --start-servers is therefore NOT used in the behat command.
 #
 # The plugin has NO external plugin dependencies. Integration with local_adele
 # is optional and detected at runtime, so nothing extra is installed here.
@@ -33,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.1', '8.2', '8.3']
+        php: ['8.2', '8.3', '8.4', '8.5']
 
     steps:
       - uses: actions/checkout@v4
@@ -135,27 +143,79 @@ jobs:
         run: moodle-plugin-ci validate
 
   # ── 2. PHPUnit ───────────────────────────────────────────────────────────
+  #
+  # DB tiers (both MariaDB and PostgreSQL services are always started;
+  # only the engine matching matrix.db.type is used for the test run):
+  #   classic: MariaDB 10.11 + PostgreSQL 15  (Moodle 4.5, 5.0)
+  #   modern:  MariaDB 11.4  + PostgreSQL 17  (Moodle 5.1, 5.2)
+  #
+  # Services use matrix expressions for the image tag — GitHub Actions
+  # evaluates these per job instance before starting the containers.
   phpunit:
-    name: "PHPUnit (${{ matrix.moodle }} / PHP ${{ matrix.php }} / ${{ matrix.db.engine }})"
+    name: "PHPUnit (${{ matrix.moodle }} / PHP ${{ matrix.php }} / ${{ matrix.db.engine }} [${{ matrix.db.tier }}])"
     runs-on: ubuntu-24.04
     needs: [lint-php]
     strategy:
       fail-fast: false
       matrix:
-        moodle: [MOODLE_405_STABLE, MOODLE_500_STABLE, MOODLE_501_STABLE, MOODLE_502_STABLE]
-        php: ['8.1', '8.2', '8.3']
+        moodle:
+          - MOODLE_405_STABLE
+          - MOODLE_500_STABLE
+          - MOODLE_501_STABLE
+          - MOODLE_502_STABLE
+        php: ['8.2', '8.3', '8.4', '8.5']
         db:
-          - { engine: mariadb, type: mariadb, port: 3306, user: root,   pass: root   }
-          - { engine: pgsql,   type: pgsql,   port: 5432, user: moodle, pass: moodle }
+          - tier: classic
+            engine: mariadb
+            type: mariadb
+            port: 3306
+            user: root
+            pass: root
+            mariadb_image: 'mariadb:10.11'
+            pgsql_image: 'postgres:15'
+          - tier: classic
+            engine: pgsql
+            type: pgsql
+            port: 5432
+            user: moodle
+            pass: moodle
+            mariadb_image: 'mariadb:10.11'
+            pgsql_image: 'postgres:15'
+          - tier: modern
+            engine: mariadb
+            type: mariadb
+            port: 3306
+            user: root
+            pass: root
+            mariadb_image: 'mariadb:11.4'
+            pgsql_image: 'postgres:17'
+          - tier: modern
+            engine: pgsql
+            type: pgsql
+            port: 5432
+            user: moodle
+            pass: moodle
+            mariadb_image: 'mariadb:11.4'
+            pgsql_image: 'postgres:17'
         exclude:
-          # Moodle 5.x requires PHP 8.2+.
-          - { moodle: MOODLE_500_STABLE, php: '8.1' }
-          - { moodle: MOODLE_501_STABLE, php: '8.1' }
-          - { moodle: MOODLE_502_STABLE, php: '8.1' }
+          # PHP constraints per Moodle branch.
+          - { moodle: MOODLE_405_STABLE, php: '8.4' }
+          - { moodle: MOODLE_405_STABLE, php: '8.5' }
+          - { moodle: MOODLE_500_STABLE, php: '8.2' }
+          - { moodle: MOODLE_500_STABLE, php: '8.5' }
+          - { moodle: MOODLE_501_STABLE, php: '8.2' }
+          - { moodle: MOODLE_501_STABLE, php: '8.5' }
+          - { moodle: MOODLE_502_STABLE, php: '8.2' }
+          - { moodle: MOODLE_502_STABLE, php: '8.3' }
+          # DB tier constraints: classic for 4.5 + 5.0, modern for 5.1 + 5.2.
+          - { moodle: MOODLE_501_STABLE, db: { tier: classic } }
+          - { moodle: MOODLE_502_STABLE, db: { tier: classic } }
+          - { moodle: MOODLE_405_STABLE, db: { tier: modern } }
+          - { moodle: MOODLE_500_STABLE, db: { tier: modern } }
 
     services:
       mariadb:
-        image: mariadb:10.11
+        image: ${{ matrix.db.mariadb_image }}
         env:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
@@ -163,7 +223,7 @@ jobs:
           --health-cmd="mysqladmin ping --silent"
           --health-interval=10s --health-retries=10
       pgsql:
-        image: postgres:16
+        image: ${{ matrix.db.pgsql_image }}
         env:
           POSTGRES_USER:     moodle
           POSTGRES_PASSWORD: moodle
@@ -220,14 +280,25 @@ jobs:
         run: moodle-plugin-ci phpunit --fail-on-warning
 
   # ── 3. Behat ─────────────────────────────────────────────────────────────
+  #
+  # Selenium is started as a GHA service so the image is pulled and the
+  # container is healthy BEFORE the job steps run (avoids runtime docker
+  # pull timeouts / stale image-tag failures seen with --start-servers).
+  # The PHP built-in web server is started manually on port 8000, which
+  # matches the default wwwroot that moodle-plugin-ci install configures.
+  # moodle-plugin-ci behat is therefore called WITHOUT --start-servers.
   behat:
-    name: "Behat (${{ matrix.moodle }} / PHP 8.2 / Chrome)"
+    name: "Behat (${{ matrix.moodle }} / PHP ${{ matrix.php }} / Chrome)"
     runs-on: ubuntu-24.04
     needs: [lint-php, lint-js]
     strategy:
       fail-fast: false
       matrix:
-        moodle: [MOODLE_405_STABLE, MOODLE_500_STABLE, MOODLE_501_STABLE, MOODLE_502_STABLE]
+        include:
+          - { moodle: MOODLE_405_STABLE, php: '8.2' }
+          - { moodle: MOODLE_500_STABLE, php: '8.3' }
+          - { moodle: MOODLE_501_STABLE, php: '8.3' }
+          - { moodle: MOODLE_502_STABLE, php: '8.4' }
 
     services:
       mariadb:
@@ -238,6 +309,16 @@ jobs:
         options: >-
           --health-cmd="mysqladmin ping --silent"
           --health-interval=10s --health-retries=10
+      selenium:
+        image: selenium/standalone-chrome:latest
+        options: >-
+          --shm-size=2gb
+          --health-cmd="curl -fsSL http://localhost:4444/status"
+          --health-interval=15s
+          --health-timeout=30s
+          --health-retries=5
+        ports:
+          - 4444:4444
 
     steps:
       - uses: actions/checkout@v4
@@ -246,7 +327,7 @@ jobs:
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: ${{ matrix.php }}
           extensions: mbstring, pdo, pdo_mysql, gd, xml, zip, intl
           ini-values: max_input_vars=5000
           coverage: none
@@ -281,6 +362,12 @@ jobs:
           DB: mariadb
           MOODLE_BRANCH: ${{ matrix.moodle }}
 
+      - name: Start PHP built-in web server
+        run: |
+          php -S localhost:8000 -t "${{ github.workspace }}/moodle" \
+            > /dev/null 2>&1 &
+          sleep 2
+
       - name: Initialise Behat environment
         run: |
           if [ -f moodle/admin/tool/behat/cli/init.php ]; then
@@ -291,8 +378,7 @@ jobs:
         run: |
           moodle-plugin-ci behat \
             --profile chrome \
-            --tags "@local_instantcoursecompletion&&~@broken" \
-            --start-servers
+            --tags "@local_instantcoursecompletion&&~@broken"
 
       - name: Upload failure screenshots
         if: failure()

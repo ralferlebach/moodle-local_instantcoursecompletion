@@ -38,40 +38,40 @@ Moodle: >= 4.5 (2024100700); getestet: 4.5, 5.0, 5.1, 5.2.
 KEINE Abwärtskompatibilität < 4.5.
 
 Haupt-Dependencies:
-  KEINE. Integration mit local_adele ist OPTIONAL und wird zur Laufzeit erkannt
-  (get_config('local_adele', ...) + Verzeichnis-Check). Nicht in version.php deklariert.
+  KEINE. Integration mit local_adele ist OPTIONAL und wird zur Laufzeit erkannt.
+  Nicht in version.php deklariert.
 
 ---
 
 ### D) Aktueller Entwicklungsstand
 
-**Version:** 0.2.1 (2026070902) — Phase 2 Kursebenen-Aggregation implementiert.
+**Version:** 0.2.2 (2026070903) — Phase 2 vollständig implementiert und lokal grün.
 
-**Versions-Konvention Session 002 (0.2.x):**
-  MINOR-Increment pro Iterations-Patch; reine Fixes (linting/unit/behat) kein
-  eigenes Increment.
+**Versions-Konvention (0.2.x):**
+  MINOR-Increment pro Iterations-Patch; reine Fixes kein eigenes Increment.
 
 **Grundsatz (nicht ohne explizite Diskussion ändern):**
   Lesart A — KEINE eigene Abschlusslogik. Das Plugin wertet vorhandene Moodle-
   Completion-Kriterien nur früher und eingegrenzt aus (Observer → Scope → Kern-API).
 
 **Zuletzt abgeschlossen (Session 002):**
-  - CI-Matrix auf Moodle 4.5 / 5.0 / 5.1 / 5.2 erweitert
-  - Session-Konvention etabliert (1 Chat = 1 Session-Dokument, session-NNN.md)
-  - Phase 2: completion_booker::book() implementiert
-      * Pass 1: criterion::review() je Kriterium (markiert Kriterium-Completions)
-      * Pass 2: Aggregation ALL/ANY je Kriteriumstyp und gesamt
-      * mark_complete() via new completion_completion(['userid','course'])
-      * Outcomes: already-complete, criteria-not-met, booked
-  - Neue Integrationstests (3 Tests):
-      * test_book_returns_true_when_already_complete (Guard 2)
-      * test_book_returns_true_when_all_criteria_satisfied (Phase-2-Integration)
-      * test_book_returns_false_when_criteria_not_met (Phase-2-Integration)
-  - Naming-Fix: session001.md → session-001.md (Bindestrich-Konvention)
+  - CI-Matrix auf Moodle 4.5 / 5.0 / 5.1 / 5.2 erweitert.
+  - Makefile PHPUnit-Reinit: util.php --diag (Exit 135 + 140 abgefangen).
+  - Phase 2 Schritt 1: completion_booker::book() vollständig
+      * Evaluation via $criterion->review($completion, false) — kein internes Tabellenwrite
+      * ALL/ANY-Aggregation je criteriatype + gesamt
+      * completion_completion->mark_complete() bei Erfüllung
+      * Lokale Testumgebung: local_adele-Observer-Konflikt via resetDebugging() gelöst
+  - Phase 2 Schritt 2: reconcile_task vollständig
+      * eligible_course_ids(): SCOPE_ALL → DB-Query; SCOPE_CATEGORIES/ADELE → Resolver
+      * process_course(): aktive Einschreibungen (direkte DB-Insertion in Tests)
+  - CI: Behat-init-Skript bedingt (Moodle 5.1/5.2-Kompatibilität)
+  - Alle lokalen Tests grün (19 Tests, 1 expected Skip)
 
 **Als nächstes geplant:**
-  Phase 2 Schritt 2 — reconcile_task für datums-/dauerbasierte Kriterien.
-  Optional: Admin-Report beschleunigter Abschlüsse (bei aktivem Logging).
+  - CI-Pipeline-Ergebnis 4.5/5.0/5.1/5.2 verifizieren.
+  - Optional: Admin-Report beschleunigter Abschlüsse (bei aktivem Logging).
+  - Optional: Release-Vorbereitung (Maturity BETA, README).
 
 ---
 
@@ -83,75 +83,53 @@ Arbeitsschritt als vollumfänglich erfüllt angesehen wird, zum nächsten
 vorgesehenen Schritt in der Umsetzung über.
 
 Schlüssel-Entwurfsentscheidungen (nicht verändern ohne explizite Diskussion):
-  1. keine eigene Abschlusslogik; nur Kern-Completion-API
-     (completion_info, criteria review, completion_completion::mark_complete).
+  1. Keine eigene Abschlusslogik; nur Kern-Completion-API.
   2. Scope-Modi: all / categories (inkl. Unterkategorien + Include-/Exclude-Tags)
-     / adele (delegiert Filterdefinition an local_adele, nur wenn installiert).
+     / adele (delegiert an local_adele, nur wenn installiert).
   3. Observer schlank + wirft nie; schwere Arbeit in Adhoc-Task (async, Default)
      oder synchron (sync, nur kleine Scopes).
-  4. Scope-Auflösung wird in MUC-Application-Cache gehalten und bei strukturellen
-     Änderungen (Kurs/Kategorie/Tag) sowie Settings-Änderungen invalidiert.
-  5. Dedup pro (courseid,userid) je Request; queue_adhoc_task($task, true).
-  6. Privacy: null_provider (kein eigener personenbezogener Datenbestand).
+  4. Scope-Auflösung im MUC-Application-Cache; Invalidierung bei Struktur- und
+     Settings-Änderungen.
+  5. Dedup pro (courseid, userid) je Request; queue_adhoc_task($task, true).
+  6. Privacy: null_provider (kein eigener PII-Bestand).
   7. Keine harte local_adele-Dependency; eigenständig lauffähig.
-  8. CI ohne Fremd-Plugins (--no-init + manuelles init.php); Matrix
-     4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3 (PHP 8.1 nur auf 4.5).
+  8. CI ohne Fremd-Plugins; Matrix 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3.
 
-Bekannte Stolperfallen (aus CI-/Test-Debugging gelernt):
-  - Lang-Dateien: alphabetisch sortiert, keine Kommentar-Trennzeilen
-  - Keine Leerzeile nach öffnender { (Klasse, Methode, Block)
-  - Genau 1 Space nach Komma; keine Alignment-Paddings
-  - Inline-Kommentare: Großbuchstabe/Ziffer am Anfang, Satzzeichen am Ende
-  - Keine MOODLE_INTERNAL-Guards in Klassen-Dateien (classes/); auch nicht in
-    reinen Funktions-/Generator-Dateien ohne Seiteneffekte (lib.php, tests/generator)
-  - Kein "TODO"/"@todo"-Token in ausgeliefertem Code (moodlecheck verlangt MDL-Ref)
-  - @param-Typ muss dem tatsächlichen Type-Hint exakt entsprechen
-  - Observer dürfen nie fatal werfen (try/catch, debugging statt Exception)
-  - Tests: keine Einschreibung/Events auslösen, wenn nicht nötig — fremde
-    Plugin-Observer (z. B. local_adele) können unter PHPUnit debugging() auslösen
-  - Statische Dedup-Register in Tests via reset_seen()/setUp zurücksetzen
-    (DB-IDs werden von resetAfterTest zurückgesetzt, Statics nicht)
-  - Tests für completion_booker: direkte DB-Fixture-Insertion statt enrol_user()
-    (vermeidet user_enrolment_created → local_adele-Observer-Problem)
+Bekannte Stolperfallen (kumuliert):
+  - Lang-Dateien: alphabetisch, keine Kommentar-Trennzeilen.
+  - Keine Leerzeile nach öffnender { (Klasse, Methode, Block).
+  - Genau 1 Space nach Komma; keine Alignment-Paddings.
+  - Inline-Kommentare: Großbuchstabe am Anfang, Satzzeichen am Ende.
+  - Keine MOODLE_INTERNAL-Guards in classes/ oder tests/generator/.
+  - Kein TODO/@todo ohne MDL-Ref.
+  - Keine Unterstriche in lokalen Variablennamen (Moodle PHPCS).
+  - $plugin->supported = [min, max] — genau 2 Elemente (Range, keine Liste).
+  - course_completion_criteria_completion existiert in Moodle 4.5 nicht.
+    → $criterion->review($completion, false) statt direkter Tabellen-Insertions.
+  - completion_completion::mark_complete() feuert course_completed
+    → local_adele-Observer → debugging() → $this->resetDebugging() in Tests.
+  - Tests: Enrollment über direkte {enrol}/{user_enrolments}-Insertion
+    (vermeidet user_enrolment_created → local_adele-Observer-Problem).
+  - Makefile: util.php --diag für PHPUnit-Reinit-Check (Exit 0/135/140).
+  - CI Behat-init: if [ -f admin/tool/behat/cli/init.php ] für 5.x-Kompatibilität.
 
 ---
 
 ### F) Modus zur Delivery
 
-- Code-Changes immer ausliefern als Patch-ZIP: eine ZIP-Datei, die NUR
-  die geänderten Dateien enthält (kein .git-Ordner)
-- Patch-ZIPs erhalten einen durchnummerierten Namen (patch-0.X.YY.zip),
-  die Version in version.php orientiert sich am aktuellen Datum und wird
-  mit jeder Iteration hochgezählt (Format: YYYYMMDDNN, z.B. 2026070902)
-- Versions-Konvention Session 002 (0.2.x):
-    MINOR-Increment pro Iterations-Patch; reine Fixes kein eigenes Increment
-- Zu jeder Änderung eine einzeilige Kurzbeschreibung des Commits (englisch)
-  sowie bis zu 5 Stichpunkte zu den vorgenommenen Änderungen.
-  Diese Angaben als MD-Code DIREKT UNTER dem Download-Link der Patch-ZIP
-- Bei der Code-Generierung immer die Moodle-Coding-Standards einhalten:
-    - GPL-Boilerplate-Header in jeder Datei
-    - PHPDoc für alle Klassen, Methoden und Properties
-    - Short array syntax ([] statt array())
-    - Keine Leerzeile nach öffnender {
-    - Multiline-Argumente: jedes Argument auf eigener Zeile
-    - Genau 1 Space nach Komma in Argumentlisten (kein Alignment-Padding)
-    - Inline-Kommentare: Großbuchstabe/Ziffer am Anfang, Punkt/!/? am Ende
-    - Keine MOODLE_INTERNAL-Guards in Klassen-Dateien (classes/)
-    - Membervariablen: all lowercase (kein camelCase)
-    - Lang-Strings: alphabetisch sortiert, keine Kommentar-Trennzeilen
-    - PHPUnit-Tests: basic_testcase ohne DB, advanced_testcase mit DB
-    - @covers-Annotation in jeder Testklasse
-- Author: Ralf Erlebach, Jahr: 2026, Lizenz: GPL v3 or later
-- Bei Unklarheiten und auftretenden Fehlern: Shell-Skripte, SQL-Abfragen
-  und JS-Skripte für die Konsole mitliefern. Diagnose-Skripte werden
-  grundsätzlich nur im Chat-Fenster ausgeliefert, nie als Download!
+- Code-Changes: Patch-ZIP (nur geänderte Dateien, kein .git/).
+- Patch-ZIPs: patch-0.X.YY.zip; version.php Format YYYYMMDDNN.
+- Versions-Konvention: MINOR-Increment pro Feature-Patch; reine Fixes kein Increment.
+- Commit-Kurzbeschreibung + max. 5 Stichpunkte als MD-Code direkt unter Download-Link.
+- Moodle-Coding-Standards: GPL-Header, PHPDoc, Short-Array-Syntax, keine Leerzeile
+  nach {, 1 Space nach Komma, Großbuchstabe in Inline-Kommentaren, keine MOODLE_INTERNAL
+  in classes/, alphabetische Lang-Strings.
+- Author: Ralf Erlebach, Jahr: 2026, Lizenz: GPL v3 or later.
+- Diagnose-Skripte: nur im Chat, nie als Download.
 
 Bevor du beginnst:
-1. Bestätige kurz, was du aus dem Kontext-Dokument und den
-   Dateien verstanden hast.
-2. Benenne, falls vorhanden, Widersprüche oder fehlende
-   Informationen, die du für die heutige Aufgabe brauchst.
-3. Warte dann auf meine Freigabe, bevor du Code schreibst.
+1. Bestätige kurz, was du aus dem Kontext-Dokument und den Dateien verstanden hast.
+2. Benenne Widersprüche oder fehlende Informationen.
+3. Warte auf Freigabe, bevor du Code schreibst.
 
-Liefere nun eine kurze Einschätzung zu den bevorstehenden Arbeiten
-und den drei Punkten oben!
+Liefere nun eine kurze Einschätzung zu den bevorstehenden Arbeiten!
