@@ -26,6 +26,7 @@ namespace local_instantcoursecompletion;
 
 use core\event\base;
 use local_instantcoursecompletion\task\book_completion_task;
+use local_instantcoursecompletion\task\notify_dependent_courses_task;
 
 /**
  * Event observer implementation.
@@ -74,16 +75,81 @@ class observer {
     }
 
     /**
-     * React to a course completion by re-evaluating the courses that require it.
+     * React to a course completion by queuing a bounded re-evaluation of the courses
+     * that require it.
+     *
+     * A hub course required by many programmes can have far more dependents than fit
+     * in one request; the fan-out itself lives in notify_dependent_courses_task, which
+     * pages through them and continues across further tasks if needed.
      *
      * @param \core\event\course_completed $event The triggering event.
      * @return void
      */
     public static function course_completed(\core\event\course_completed $event): void {
+        $courseid = (int)$event->courseid;
         $userid = (int)$event->relateduserid;
+        if ($courseid <= 0 || $userid <= 0) {
+            return;
+        }
 
-        foreach (criteria_index::dependent_course_ids((int)$event->courseid) as $dependentid) {
-            self::handle_completion_trigger($dependentid, $userid);
+        $task = new notify_dependent_courses_task();
+        $task->set_custom_data((object)[
+            'courseid' => $courseid,
+            'userid' => $userid,
+            'fromcourseid' => 0,
+        ]);
+        $task->set_userid($userid);
+
+        try {
+            \core\task\manager::queue_adhoc_task($task, true);
+        } catch (\Throwable $e) {
+            debugging(
+                'local_instantcoursecompletion: could not queue dependent-course notification for'
+                . " course={$courseid} user={$userid}: " . $e->getMessage(),
+                DEBUG_DEVELOPER
+            );
+        }
+    }
+
+    /**
+     * Plan due bookings for a newly enrolled user.
+     *
+     * @param \core\event\user_enrolment_created $event The triggering event.
+     * @return void
+     */
+    public static function user_enrolment_created(\core\event\user_enrolment_created $event): void {
+        self::schedule_due_bookings((int)$event->courseid, (int)$event->relateduserid);
+    }
+
+    /**
+     * Re-plan due bookings after an enrolment changed.
+     *
+     * A changed start date moves the due time of a duration criterion. The batch planned
+     * for the old due window stays queued and ends without effect, because it
+     * re-evaluates the criterion rather than trusting the window it was planned for.
+     *
+     * @param \core\event\user_enrolment_updated $event The triggering event.
+     * @return void
+     */
+    public static function user_enrolment_updated(\core\event\user_enrolment_updated $event): void {
+        self::schedule_due_bookings((int)$event->courseid, (int)$event->relateduserid);
+    }
+
+    /**
+     * Plan the time-based bookings of one user, swallowing any failure.
+     *
+     * @param int $courseid Affected course ID.
+     * @param int $userid   Affected user ID.
+     * @return void
+     */
+    protected static function schedule_due_bookings(int $courseid, int $userid): void {
+        try {
+            due_scheduler::schedule_user($courseid, $userid);
+        } catch (\Throwable $e) {
+            debugging(
+                'local_instantcoursecompletion: due scheduling failed: ' . $e->getMessage(),
+                DEBUG_DEVELOPER
+            );
         }
     }
 

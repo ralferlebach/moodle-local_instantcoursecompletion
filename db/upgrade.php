@@ -58,5 +58,16 @@ function xmldb_local_instantcoursecompletion_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026070914, 'local', 'instantcoursecompletion');
     }
 
+    if ($oldversion < 2026070915) {
+        // The per-user due task no longer exists: book_due_completion_task has been
+        // replaced by one batch task per criterion and due window. Queued tasks of the
+        // removed class would make cron fail to instantiate them. Discovery re-plans it.
+        $DB->delete_records('task_adhoc', [
+            'classname' => '\\local_instantcoursecompletion\\task\\book_due_completion_task',
+        ]);
+
+        upgrade_plugin_savepoint(true, 2026070915, 'local', 'instantcoursecompletion');
+    }
+
     return true;
 }

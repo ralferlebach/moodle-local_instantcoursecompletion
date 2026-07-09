@@ -25,7 +25,6 @@
 namespace local_instantcoursecompletion;
 
 use local_instantcoursecompletion\task\book_due_completion_batch_task;
-use local_instantcoursecompletion\task\book_due_completion_task;
 
 /**
  * Course, criterion, enrolment and completion fixtures.
@@ -37,7 +36,7 @@ trait completion_test_trait {
      * @return \core\task\adhoc_task[]
      */
     protected function queued_tasks(): array {
-        return \core\task\manager::get_adhoc_tasks(book_due_completion_task::class);
+        return \core\task\manager::get_adhoc_tasks(book_due_completion_batch_task::class);
     }
 
     /**
@@ -52,65 +51,82 @@ trait completion_test_trait {
     }
 
     /**
-     * The user IDs the queued due-booking tasks were planned for.
+     * Assert that a task runs at the start of the batch window containing its due time.
      *
-     * @return int[] Sorted ascending.
-     */
-    protected function queued_user_ids(): array {
-        $userids = [];
-        foreach ($this->queued_tasks() as $task) {
-            $userids[] = (int)$task->get_custom_data()->userid;
-        }
-        sort($userids);
-        return $userids;
-    }
-
-    /**
-     * Reset the criteria index and switch due scheduling on for the whole site.
-     *
-     * @return void
-     */
-    protected function enable_due_scheduling(): void {
-        criteria_index::purge();
-        set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
-        set_config('schedulingenabled', 1, 'local_instantcoursecompletion');
-    }
-
-    /**
-     * Batched due-booking tasks currently queued.
-     *
-     * @return \core\task\adhoc_task[]
-     */
-    protected function queued_batch_tasks(): array {
-        return \core\task\manager::get_adhoc_tasks(book_due_completion_batch_task::class);
-    }
-
-    /**
-     * The single queued batched due-booking task.
-     *
-     * @return \core\task\adhoc_task
-     */
-    protected function single_queued_batch_task(): \core\task\adhoc_task {
-        $tasks = $this->queued_batch_tasks();
-        $this->assertCount(1, $tasks);
-        return reset($tasks);
-    }
-
-    /**
-     * Assert that a task runs no earlier than its due time and inside the jitter window.
-     *
-     * The due time lives in nextruntime, not in the custom data: it must not take part
-     * in the de-duplication key, or a moved enrolment start would leave a stale twin.
+     * Rounding up means a task never runs before its criterion is satisfied, and never
+     * later than the per-user jitter of earlier versions already allowed.
      *
      * @param \core\task\adhoc_task $task    The queued task.
      * @param int                    $duetime The moment the criterion falls due.
      * @return void
      */
     protected function assert_due_at(\core\task\adhoc_task $task, int $duetime): void {
-        $nextruntime = (int)$task->get_next_run_time();
+        $this->assertSame(due_scheduler::due_bucket($duetime), (int)$task->get_next_run_time());
+    }
 
-        $this->assertGreaterThanOrEqual($duetime, $nextruntime);
-        $this->assertLessThan($duetime + due_scheduler::JITTER_WINDOW, $nextruntime);
+    /**
+     * The criterion IDs the queued batch tasks were planned for.
+     *
+     * @return int[] Sorted ascending, de-duplicated.
+     */
+    protected function queued_criteria_ids(): array {
+        $ids = [];
+        foreach ($this->queued_tasks() as $task) {
+            $ids[(int)$task->get_custom_data()->criteriaid] = true;
+        }
+        $ids = array_keys($ids);
+        sort($ids);
+        return $ids;
+    }
+
+    /**
+     * Switch on due scheduling with predictable bounds.
+     *
+     * @return void
+     */
+    protected function enable_due_scheduling(): void {
+        set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
+        set_config('schedulingenabled', 1, 'local_instantcoursecompletion');
+        set_config('schedulinghorizon', WEEKSECS, 'local_instantcoursecompletion');
+        criteria_index::purge();
+    }
+
+    /**
+     * The run times of the queued batch tasks.
+     *
+     * @return int[] Sorted ascending.
+     */
+    protected function queued_run_times(): array {
+        $times = [];
+        foreach ($this->queued_tasks() as $task) {
+            $times[] = (int)$task->get_next_run_time();
+        }
+        sort($times);
+        return $times;
+    }
+
+    /**
+     * The queued batch tasks that resume a page rather than start one.
+     *
+     * @return \core\task\adhoc_task[]
+     */
+    protected function queued_continuations(): array {
+        return array_values(array_filter(
+            $this->queued_tasks(),
+            static fn($task) => (int)$task->get_custom_data()->lastuserid > 0
+        ));
+    }
+
+    /**
+     * Run every queued batch task once, in queue order.
+     *
+     * @return void
+     */
+    protected function run_queued_tasks(): void {
+        foreach ($this->queued_tasks() as $task) {
+            $task->execute();
+        }
+        $this->resetDebugging();
     }
 
     /**
@@ -165,8 +181,9 @@ trait completion_test_trait {
             $roleid = $DB->get_field('role', 'id', ['shortname' => $rolename], MUST_EXIST);
             role_assign($roleid, (int)$user->id, \context_course::instance((int)$course->id)->id);
 
-            // role_assign() fires role_assigned; other installed plugins observe it and
-            // emit debugging under PHPUnit. Their noise must not fail our assertions.
+            // Assigning a role fires role_assigned, and other installed plugins observe
+            // it with code that requires PHPUnit process isolation. Their debugging()
+            // call would fail whichever test happens to enrol last.
             $this->resetDebugging();
         }
     }

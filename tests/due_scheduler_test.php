@@ -72,7 +72,7 @@ final class due_scheduler_test extends \advanced_testcase {
 
         $task = $this->single_queued_task();
         $this->assert_due_at($task, $timestart + DAYSECS * 3);
-        $this->assertSame((int)$user->id, (int)$task->get_custom_data()->userid);
+        $this->assertSame((int)$course->id, (int)$task->get_custom_data()->courseid);
     }
 
     /**
@@ -101,7 +101,7 @@ final class due_scheduler_test extends \advanced_testcase {
         $user = $this->getDataGenerator()->create_user();
         $this->add_date_criterion($course, time() + DAYSECS);
         $this->add_duration_criterion($course, DAYSECS * 2);
-        $this->enrol_user_direct($course, $user, time(), time());
+        $this->enrol_user_direct($course, $user, time() - HOURSECS, time() - HOURSECS);
 
         $this->assertSame(2, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
         $this->assertCount(2, $this->queued_tasks());
@@ -116,7 +116,7 @@ final class due_scheduler_test extends \advanced_testcase {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
         $user = $this->getDataGenerator()->create_user();
         $this->add_duration_criterion($course, WEEKSECS * 8);
-        $this->enrol_user_direct($course, $user, time(), time());
+        $this->enrol_user_direct($course, $user, time() - HOURSECS, time() - HOURSECS);
 
         $this->assertSame(0, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
         $this->assertCount(0, $this->queued_tasks());
@@ -249,11 +249,17 @@ final class due_scheduler_test extends \advanced_testcase {
     }
 
     /**
-     * A moved enrolment start moves the existing task instead of adding a second one.
+     * A moved enrolment start plans a task for the new window.
+     *
+     * The due window is part of the de-duplication key, because a duration criterion
+     * falls due at a different moment for every learner and each window needs its own
+     * task. A moved due time therefore adds a task rather than moving one, and the task
+     * left behind in the old window is a no-op: it runs before the criterion is
+     * satisfied, finds nobody due, books nothing and is then discarded by cron.
      *
      * @return void
      */
-    public function test_schedule_user_reschedules_a_moved_due_time(): void {
+    public function test_schedule_user_plans_the_new_window_when_a_due_time_moves(): void {
         global $DB;
 
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
@@ -265,29 +271,45 @@ final class due_scheduler_test extends \advanced_testcase {
         due_scheduler::schedule_user((int)$course->id, (int)$user->id);
         $this->assert_due_at($this->single_queued_task(), $timestart + DAYSECS * 3);
 
-        // The administrator corrects the enrolment start by one day.
-        $moved = $timestart + DAYSECS;
+        // The administrator corrects the enrolment start.
+        // The correction stays comfortably in the past: get_enrolled_sql() treats an
+        // enrolment as active only while ue.timestart < round(time(), -2), so a start date
+        // set to "now" falls on the wrong side of that boundary about half the time.
+        $moved = $timestart + HOURSECS;
         $DB->set_field('user_enrolments', 'timestart', $moved, ['userid' => (int)$user->id]);
 
         due_scheduler::schedule_user((int)$course->id, (int)$user->id);
 
-        $this->assertCount(1, $this->queued_tasks());
-        $this->assert_due_at($this->single_queued_task(), $moved + DAYSECS * 3);
+        $this->assertCount(2, $this->queued_tasks());
+        $this->assertSame(
+            [
+                due_scheduler::due_bucket($timestart + DAYSECS * 3),
+                due_scheduler::due_bucket($moved + DAYSECS * 3),
+            ],
+            $this->queued_run_times()
+        );
     }
 
     /**
-     * A suspended account cannot own an ad-hoc task and is never planned.
+     * Two users falling due inside one window share a single batch task.
      *
      * @return void
      */
-    public function test_schedule_user_skips_suspended_users(): void {
+    public function test_schedule_user_shares_a_task_within_a_window(): void {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user(['suspended' => 1]);
-        $this->add_date_criterion($course, time() + DAYSECS);
-        $this->enrol_user_direct($course, $user);
+        $timeend = time() + DAYSECS;
+        $this->add_date_criterion($course, $timeend);
 
-        $this->assertSame(0, due_scheduler::schedule_user((int)$course->id, (int)$user->id));
-        $this->assertCount(0, $this->queued_tasks());
+        $first = $this->getDataGenerator()->create_user();
+        $second = $this->getDataGenerator()->create_user();
+        $this->enrol_user_direct($course, $first);
+        $this->enrol_user_direct($course, $second);
+
+        due_scheduler::schedule_user((int)$course->id, (int)$first->id);
+        due_scheduler::schedule_user((int)$course->id, (int)$second->id);
+
+        $this->assertCount(1, $this->queued_tasks());
+        $this->assert_due_at($this->single_queued_task(), $timeend);
     }
 
     /**

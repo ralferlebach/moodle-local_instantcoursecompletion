@@ -8,69 +8,225 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.4.9] - 2026-07-09
+## [0.4.10] - 2026-07-09
 
-Phase C des externen Reviews: der Task-Fan-out bei gemeinsamem Abschlussdatum ist
-beseitigt, und der Booker baut den Kurskontext einmal je Stapel statt einmal je Nutzer.
+### Fixed (kein Versions-Increment, iterativ in dieser Session)
 
-### Added
+- **`get_fieldset_sql()` nimmt keine Limit-Parameter.** Die Signatur lautet
+  `get_fieldset_sql($sql, ?array $params = null)`; PHP schluckt überzählige Argumente
+  wortlos. An fünf Stellen wurden `$limitfrom`/`$limitnum` übergeben und ignoriert:
+  `book_due_completion_batch_task::due_user_ids()` (beide Abfragen),
+  `discover_due_criteria_task::eligible_course_ids()`,
+  `reconcile_task::eligible_course_ids()` und `criteria_index::dependent_course_ids()`.
+  Die in Phase A und C zugesicherte Deckelung war damit für diese Abfragen **nie in
+  Kraft**: ein Batch-Task las die ganze Kohorte statt `batchsize`, ein Discovery-Lauf
+  alle Kurse statt 200. Ersetzt durch `get_records_sql(..., 0, $limit)` mit
+  `array_keys()` — die erste Spalte ist in allen fünf Abfragen durch `DISTINCT` bzw.
+  `GROUP BY` eindeutig.
+- **`core_tag_tag::get_by_name_bulk()` indiziert sein Ergebnis über `$record->name`.**
+  Wir haben `'id'` als `$returnfields` übergeben, worauf der Core mit
+  `Undefined property: stdClass::$name` aussteigt. Korrigiert auf `'id, name'`. Betraf
+  jede Scope-Prüfung mit konfigurierten Tags.
+- **`\core\task\manager` cacht die Ad-hoc-Queue in prozessweiten Statics**
+  (`$miniqueue`, `$numtasks`, `$mode`), die PHPUnit zwischen Tests nicht zurücksetzt.
+  `book_due_completion_batch_task_test::run_next_batch()` ruft jetzt
+  `manager::reset_state()` und `get_next_adhoc_task(..., $checklimits = false)` — die
+  Nebenläufigkeits-Buchführung ist eine Cron-Runner-Angelegenheit und hat in einem
+  Unit-Test nichts zu suchen.
 
-- **`course_booker`** (neu): Buchungskontext für einen Kurs. Kursdatensatz,
-  `completion_info` und Kriterienliste werden **einmal** gelesen und für jeden Nutzer
-  wiederverwendet. Genau dieses Wiederaufbauen je Nutzer machte aus einem Stapel von
-  500 Lernenden einige tausend Abfragen — `get_criteria()` und `get_fast_modinfo()`
-  liefen bisher pro Person erneut.
-- **`book_due_completion_batch_task`** (neu): verbucht eine Seite der Kohorte, für die
-  ein Datums-Kriterium fällig geworden ist, und reiht bei voller Seite die eigene
-  Fortsetzung ein. Die Seitenposition (`lastuserid`) ist Teil des Dedup-Schlüssels,
-  weshalb eine Fortsetzung neben dem Kopf-Task existieren kann, den ein späterer
-  Discovery-Lauf neu plant.
-- Einstellung `batchsize` (Default 500).
+### Changed
 
-### Changed — Fan-out
+- **Die beiden Reschedule-Tests behaupteten das Falsche.** Seit 0.4.9 ist `duebucket`
+  Teil des Dedup-Schlüssels, weil ein Dauer-Kriterium für jede Person zu einem anderen
+  Zeitpunkt fällig wird und jedes Fenster seinen eigenen Task braucht. Ein verschobener
+  Fälligkeitszeitpunkt legt daher einen **zusätzlichen** Task für das neue Fenster an,
+  statt einen bestehenden zu verschieben. Der im alten Fenster zurückgebliebene Task
+  ist ein No-op: er läuft vor der Fälligkeit, findet niemanden
+  (`timeend > time()` bzw. `HAVING started <= now - enrolperiod`), verbucht nichts und
+  wird vom Cron verworfen. `test_schedule_user_reschedules_a_moved_due_time` und
+  `test_rescheduling_moves_the_existing_task` prüfen jetzt genau das — samt der
+  Zusicherung, dass der veraltete Task niemanden verbucht.
+- `completion_test_trait::queued_run_times()` ergänzt.
 
-- **Ein Datums-Kriterium erzeugt genau einen Task, nicht einen je Lernendem.**
-  Bei 50.000 Teilnehmenden und gemeinsamem Abschlussdatum entstanden bisher 50.000
-  Zeilen in `{task_adhoc}`, alle mit derselben Fälligkeit. Jetzt: ein Kopf-Task und,
-  bei Bedarf, `⌈50.000 / batchsize⌉` Fortsetzungen, die nacheinander laufen.
-  Der Jitter aus 0.4.3 wird damit für Datums-Kriterien überflüssig.
-- **Die Discovery prüft für Datums-Kriterien keine Einschreibungszeile mehr.** Statt
-  50.000 Zeilen zu lesen fragt sie über `due_scheduler::date_due_user_ids(..., 1)` eine
-  einzige Zeile ab: schuldet niemand mehr das Kriterium, wird kein Stapel geplant.
-  Ein Kurs mit Abschlussdatum aus 2020 erzeugt also nicht stündlich einen leeren Task.
-- **Dauer-Kriterien bleiben nutzerweise geplant.** Ihre Fälligkeiten unterscheiden sich
-  je Person und verteilen sich von selbst über den Horizont; ein Stapel hätte dort
-  keinen gemeinsamen Zeitpunkt zu bündeln. Cursor und Budget der Discovery greifen
-  weiterhin genau für diesen Pfad.
-- `completion_booker` ist zur Fassade über `course_booker` geworden. Alle Aufrufer
-  (`book_completion_task`, `book_due_completion_task`) bleiben unverändert.
-- `reconcile_task::process_course()` öffnet einen `course_booker` je Kurs statt je
-  Nutzer einen neuen `completion_info`-Baum.
 
-### Fixed
+### Fixed (kein Versions-Increment, iterativ in dieser Session)
 
-- **PHPUnit: `Unexpected debugging() call` in `completion_booker_test`.** Das in 0.4.7
-  eingeführte `role_assign()` im Fixture-Trait feuert `role_assigned`; `local_adele`
-  beobachtet dieses Ereignis und ruft `require_phpunit_isolation()`. Behoben durch
-  `resetDebugging()` unmittelbar nach der Rollenzuweisung — dasselbe Muster, das schon
-  nach `mark_complete()` nötig ist.
+- **`due_scheduler.php` war ein inkonsistenter Merge.** Der Produktivcode
+  (`discover_due_criteria_task`, `book_due_completion_batch_task`, `settings.php`) ruft
+  `BATCH_WINDOW`, `due_bucket()`, `queue_bucket()` und `queue_continuation()` auf; die
+  Datei im Repository stammte aus 0.4.8 und kannte keines davon, führte dafür aber die
+  Sackgassen `queue()`, `queue_batch()`, `date_due_user_ids()`, `user_can_own_a_task()`
+  und `JITTER_WINDOW`. Die Fehlermeldung
+  `Undefined constant due_scheduler::BATCH_WINDOW` beim PHPUnit-Init war nur der erste
+  Aufschlagpunkt: `settings.php` wird beim Setzen der Default-Einstellungen geladen.
+  Ersetzt durch die kohärente Fassung aus 0.4.9.
+- **`observer::user_enrolment_created()` und `::user_enrolment_updated()` fehlten**,
+  obwohl `db/events.php` sie unverändert registriert. Jede Einschreibung auf einer
+  Produktivinstanz hätte eine Exception geworfen. Ursache: in 0.4.8 wurde `observer.php`
+  versehentlich aus einem Stand vor 0.4.6 fortgeschrieben, wodurch die
+  Einschreibungs-Observer aus 0.4.6 verlorengingen. Wiederhergestellt.
+- **Neuer Vertragstest `observer_test::test_every_registered_callback_exists()`**: liest
+  `db/events.php` und prüft für jeden der 17 Callbacks, dass die Methode existiert. Genau
+  dieser Test hätte den Ausfall gefunden; die Einschreibungs-Observer waren bisher
+  überhaupt nicht abgedeckt. Ergänzt um einen funktionalen Test, der ein
+  `user_enrolment_created`-Ereignis konstruiert und den geplanten Batch-Task prüft.
+- **`tests/book_due_completion_batch_task_test.php`** gegen die tatsächliche API neu
+  geschrieben: `queue_bucket()` / `queue_continuation()` statt des nie existierenden
+  `queue_batch()`. Der Fälligkeitszeitpunkt wird aus dem Kriterium abgeleitet, nicht aus
+  `time()` — `due_bucket()` rundet **auf**, sodass das Fenster von „jetzt" in der Zukunft
+  läge und `get_next_adhoc_task()` den Task nicht zurückgäbe. Das erklärt die beiden
+  gemeldeten Fehlschläge.
+- **`tests/due_scheduler_test.php`** und **`tests/discover_due_criteria_task_test.php`**
+  auf den 0.4.9-Stand gebracht; sie prüften noch die per-Nutzer-`customdata` aus 0.4.8.
+- `completion_test_trait::enable_due_scheduling()` ergänzt.
+
+
+Phasen D und E des externen Reviews: Betriebsrobustheit, Einstellungsvalidierung,
+begrenztes Fan-out — und die abschliessende Dokumentation.
+
+### Added — Nebenläufigkeit (D1)
+
+- **`completion_booker` nimmt ein Lock je `(courseid, userid)`** und prüft den
+  Abschlusszustand **innerhalb** des Locks erneut. Ohne das konnten zwei parallele
+  Tasks beide den anfänglich unvollständigen Zustand sehen, beide aggregieren und beide
+  `completion_booked` auslösen. Die Core-Daten blieben idempotent, nachgelagerte
+  Event-Consumer nicht. Das Lock ist bewusst nicht kursweit: ein solches würde einen
+  ganzen Batch hinter demjenigen Nutzer serialisieren, der gerade anderswo gebucht wird.
+
+### Added — Betriebsrobustheit (D2)
+
+- **Systematische Fehler brechen den Lauf ab, Einzelfehler nicht.** `dml_exception` und
+  `coding_exception` propagieren jetzt in `reconcile_task`, `discover_due_criteria_task`
+  und `book_due_completion_batch_task`; der Cursor bleibt stehen, der nächste Lauf
+  wiederholt dieselbe Scheibe, und Cron meldet den Fehler. Bisher wurde jeder
+  `Throwable` je Nutzer geschluckt, sodass ein Datenbankfehler den Cursor durch die
+  ganze Instanz schob und Nutzer stillschweigend übersprang.
+- **Der Batch-Task hatte gar keine Fehlerbehandlung.** Bricht er ab, reiht er zuvor eine
+  Fortsetzung ab dem zuletzt tatsächlich verarbeiteten Nutzer ein — es wird niemand
+  übersprungen.
+- **Fehlerzähler `failed` in allen drei Tasks**, und die Trace-Zeile erscheint bei
+  `failed > 0` **auch bei abgeschalteter Protokollierung**. Ein Fehler auf einem
+  Produktivsystem war bisher nur im Developer-Debugging sichtbar.
+
+### Changed — Begrenztes Fan-out (D3)
+
+- **`observer::course_completed()` läuft die abhängigen Kurse nicht mehr selbst ab.**
+  Ein Grundlagenkurs, der Voraussetzung vieler Programme ist, erzeugte eine unbegrenzte
+  Ergebnisliste, eine Scope-Prüfung je Zielkurs und potenziell sehr viele
+  Task-Einreihungen in einem einzigen Request. Neu: `notify_dependent_courses_task`
+  blättert mit einem `fromcourseid`-Cursor über höchstens 200 abhängige Kurse je Lauf
+  und reiht bei voller Seite eine Fortsetzung ein.
+- `criteria_index::dependent_course_ids()` nimmt `$fromcourseid` und `$limit` entgegen
+  und sortiert aufsteigend.
+
+### Changed — Tag-Auflösung (D4)
+
+- **`core_tag_tag::get_by_name_bulk()`** statt eines `get_by_name()`-Aufrufs je Tagname.
+  Bei zehn konfigurierten Tags war das ein N+1 pro geprüftem Kurs.
+- Die aufgelösten Tag-IDs werden im neuen MUC-Cache **`scopetagids`** pro
+  Konfigurations-Hash abgelegt. Ohne den löste ein Lauf über 200 Kurse unter Cache-Miss
+  dieselbe Handvoll Namen 200-mal auf.
+
+### Added — Einstellungsvalidierung (D5)
+
+- **`bounded_int_setting`** (neu): weist Werte ausserhalb eines Bereichs beim Speichern
+  zurück. Die Tasks klemmten einen nicht-positiven Wert bisher stillschweigend auf einen
+  fest kodierten Default — der Administrator erfuhr nie, dass sein Wert nicht galt.
+  Angewandt auf `batchsize` (1–50 000), `maxtasksperrun` (1–100 000) und
+  `reconcilebudget` (1–100 000).
+- **Konsistenzwarnung für den Planungshorizont.** Ist er kürzer als das stündliche
+  Discovery-Intervall zuzüglich des Batch-Fensters, weist die Einstellungsseite darauf
+  hin, dass Fälligkeiten in dieser Lücke erst im übernächsten Lauf geplant werden.
+
+### Added — Dokumentation (Phase E)
+
+- **README neu.** Neuer Abschnitt **Compatibility Logic**: eine Tabelle der Stellen, an
+  denen Moodle mit sich selbst uneins ist (Tracked Users, Duration-Startzeit,
+  Datums-Abschlusszeitpunkt, self/role/unenrol) und welcher Seite dieses Plugin folgt.
+  Die Behauptung „It adds no completion logic of its own" ist damit ersetzt durch eine
+  präzise Aussage. Ergänzt: Batch-Fenster, Keyset-Cursor, beide Locks, Fan-out-Task,
+  Betriebs-Monitoring, sowie die drei Test-Fallstricke.
+- **`composer.json`** ergänzt. Die README verwies auf `make`-Ziele und eine CI-Matrix,
+  ohne dass sich die Dev-Abhängigkeiten aus dem Paket ergaben.
 
 ### Added — Tests
 
-- `book_due_completion_batch_task`: einzelne Seite verbucht die ganze Kohorte; volle
-  Seite reiht eine Fortsetzung mit korrektem `lastuserid` ein; drei Seiten verbuchen
-  fünf Lernende genau einmal; leeres Kriterium ist ein No-op; Lehrende werden nicht
-  verbucht; der Wirkungsbereich wird vor der Ausführung erneut geprüft; ein Stapel wird
-  nicht doppelt eingereiht, eine Fortsetzung kollidiert nicht mit ihrem Kopf.
-  Ausgeführt wird über `get_next_adhoc_task()` + `adhoc_task_complete()` — `execute()`
-  allein lässt den Datensatz in der Queue und macht Kopf und Fortsetzung ununterscheidbar.
-- `discover_due_criteria_task` neu aufgeteilt: Datums-Kriterien werden gegen
-  `queued_batch_tasks()` geprüft, die Cursor- und Budget-Regressionen aus 0.4.7 laufen
-  jetzt über Dauer-Kriterien, weil nur die noch nutzerweise geplant werden.
+- `notify_dependent_courses_task`: alle abhängigen Kurse werden ausgelöst; ohne
+  Abhängige passiert nichts; `fromcourseid` überspringt das bereits Erledigte;
+  `dependent_course_ids()` blättert aufsteigend und respektiert das Limit.
+- `bounded_int_setting`: Werte im Bereich, unter dem Minimum, über dem Maximum und
+  Nicht-Ganzzahlen.
+- `observer`: `course_completed` bucht nicht mehr selbst, sondern reiht den Fan-out-Task
+  ein; dieser löst dann die abhängigen Kurse aus.
+
+### Fixed
+
+- phpcs: Inline-Kommentar in `tests/fixtures/completion_test_trait.php` und in
+  `db/upgrade.php` begann kleingeschrieben mit einem Funktions- bzw. Klassennamen.
+
+## [0.4.9] - 2026-07-09
+
+Phase C des externen Reviews: ein Batch-Task je Kriterium und Fälligkeitsfenster statt
+eines Ad-hoc-Tasks je Nutzer. Dazu der lokal aufgetretene PHPUnit-Fehler.
+
+### Changed — Task-Fan-out (C1–C3)
+
+- **`book_due_completion_task` ist ersetzt durch `book_due_completion_batch_task`.**
+  Die `customdata` lautet `{courseid, criteriaid, duebucket, lastuserid}`. Ein
+  Datums-Kriterium mit 50.000 Teilnehmenden erzeugt jetzt **einen** Task statt 50.000.
+- **Fälligkeitsfenster statt Jitter.** `due_scheduler::BATCH_WINDOW` (900 s) rundet jede
+  Fälligkeit **auf**. Alle Nutzer eines Fensters teilen sich einen Task. Der Jitter
+  `userid % 900` entfällt, ohne dass sich die maximale Verzögerung ändert: sie war
+  vorher 0–899 s und ist es weiterhin. Aufrunden statt abrunden garantiert, dass ein
+  Task nie vor seiner Fälligkeit läuft.
+- **`completion_booker::book_criterion()`** (neu) wertet genau das fällige Kriterium aus
+  und aggregiert anschließend über `aggregate_completions()`. Der Batch baut `$course`
+  und `completion_info` **einmal** für die ganze Seite; `book()` pro Nutzer hätte den
+  Kriterienbestand und den Modul-Cache je Nutzer neu aufgebaut. Beide Einstiege teilen
+  sich `mark_criterion()` und `aggregate()`.
+- **Discovery kostet für Datums-Kriterien keine Nutzer-Scans mehr.** Ein
+  `record_exists_sql()` beantwortet, ob überhaupt noch jemand das Kriterium schuldet;
+  danach wird ein Task geplant. Dauer-Kriterien werden weiterhin per Keyset über die
+  Nutzer geblättert, weil ihre Fälligkeit nutzerabhängig ist — die Buckets werden dabei
+  im Lauf dedupliziert.
+- **Fortsetzungs-Tasks.** Ein Batch verbucht `batchsize` Nutzer (Default 500) und reiht
+  bei voller Seite einen Nachfolger mit `lastuserid` ein. Der Task ist idempotent: bei
+  einem Retry verbucht er nur, was noch keinen `crit_compl`-Datensatz hat.
+- **Kein `set_userid()` mehr auf dem Fälligkeitspfad.** Der Batch-Task ist kursweit. Der
+  in 0.4.8 nötige Index-Trick über die `userid`-Spalte entfällt, weil es jetzt so wenige
+  Zeitkriterien-Tasks gibt, dass der nicht indexierte `customdata`-Vergleich nichts
+  kostet. Der ASAP-Task des Observers (`book_completion_task`) behält `set_userid()`.
+- Der `JOIN {user}` gegen gesperrte und gelöschte Konten entfällt: er diente allein
+  `require_active_user()`, das nur bei gesetzter `userid` greift. Gesperrte Nutzer
+  werden damit wieder wie im Core behandelt.
+
+### Added
+
+- Einstellung `batchsize` (Default 500).
+- `db/upgrade.php` verwirft anstehende `book_due_completion_task`-Zeilen. Ohne das
+  scheiterte der Cron beim Instanziieren der entfernten Klasse.
+
+### Fixed — PHPUnit
+
+- **`test_book_returns_false_when_completion_disabled` schlug lokal fehl.**
+  `role_assign()` — seit 0.4.7 Teil von `enrol_user_direct()` — feuert `role_assigned`;
+  `local_adele`s Observer ruft dort `require_phpunit_isolation()` und damit `debugging()`.
+  Der Test war der einzige, der danach kein `resetDebugging()` mehr aufrief. Der Guard
+  steht jetzt im Trait, direkt hinter `role_assign()`, statt in jedem Testfall.
+
+### Added — Tests
+
+- Ein Datums-Kriterium plant genau einen Task, unabhängig von der Kohortengröße.
+- Ein bereits verbuchtes Kriterium wird nicht erneut geplant.
+- Zwei Nutzer desselben Fensters teilen sich einen Task.
+- Der Batch verbucht alle fälligen Nutzer; bei voller Seite entsteht ein
+  Fortsetzungs-Task mit `lastuserid > 0`, der den Rest verbucht.
+- Die Fortschrittsgarantie aus 0.4.7 ist auf Dauer-Kriterien umgestellt, weil ein
+  Datums-Kriterium nun nur noch eine geprüfte Zeile kostet.
 
 ### Offen (Phase D–E)
 
-- Lock um `book()`, Fehlerzähler, Einstellungsvalidierung, `get_by_name_bulk()`,
+- Locks um `book()`, Fehlerzähler, Einstellungsvalidierung, `get_by_name_bulk()`,
   begrenztes Fan-out abhängiger Kurse.
 - README-Abschnitt *Compatibility Logic*, `composer.json`, Lasttests.
 

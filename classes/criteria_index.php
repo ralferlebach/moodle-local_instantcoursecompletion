@@ -93,12 +93,17 @@ class criteria_index {
      * Courses that require the given course as a prerequisite.
      *
      * Core evaluates prerequisite criteria only from cron, so completing the
-     * prerequisite has to announce itself to the dependent courses.
+     * prerequisite has to announce itself to the dependent courses. A hub course that
+     * many programmes require as a gate can have a large number of dependents; the
+     * result is paged so that reacting to it never means an unbounded fan-out in one
+     * request or one task run.
      *
-     * @param int $courseid The prerequisite course.
-     * @return int[] IDs of the dependent, completion-enabled courses.
+     * @param int $courseid     The prerequisite course.
+     * @param int $fromcourseid Only dependent courses with a higher ID are returned.
+     * @param int $limit        Maximum number of course IDs to return.
+     * @return int[] IDs of the dependent, completion-enabled courses, ordered ascending.
      */
-    public static function dependent_course_ids(int $courseid): array {
+    public static function dependent_course_ids(int $courseid, int $fromcourseid = 0, int $limit = 0): array {
         global $CFG, $DB;
         require_once($CFG->libdir . '/completionlib.php');
 
@@ -106,15 +111,24 @@ class criteria_index {
             return [];
         }
 
-        $courseids = $DB->get_fieldset_sql(
+        // A fieldset query takes no limit; get_records_sql() keys by the first column.
+        $records = $DB->get_records_sql(
             "SELECT DISTINCT cc.course
                FROM {course_completion_criteria} cc
                JOIN {course} c ON c.id = cc.course AND c.enablecompletion = 1
-              WHERE cc.criteriatype = :criteriatype AND cc.courseinstance = :courseid",
-            ['criteriatype' => COMPLETION_CRITERIA_TYPE_COURSE, 'courseid' => $courseid]
+              WHERE cc.criteriatype = :criteriatype AND cc.courseinstance = :courseid
+                AND cc.course > :fromcourseid
+           ORDER BY cc.course ASC",
+            [
+                'criteriatype' => COMPLETION_CRITERIA_TYPE_COURSE,
+                'courseid' => $courseid,
+                'fromcourseid' => $fromcourseid,
+            ],
+            0,
+            $limit
         );
 
-        return array_map('intval', $courseids);
+        return array_map('intval', array_keys($records));
     }
 
     /**

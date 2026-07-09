@@ -36,6 +36,17 @@ $definitions = [
         'staticaccelerationsize' => 2,
     ],
 
+    // Include and exclude tag names resolved to tag IDs, keyed by a hash of the scope
+    // configuration. Without this, every course checked under a cache miss would
+    // resolve the same handful of tag names again.
+    'scopetagids' => [
+        'mode' => cache_store::MODE_APPLICATION,
+        'simplekeys' => true,
+        'simpledata' => true,
+        'staticacceleration' => true,
+        'staticaccelerationsize' => 2,
+    ],
+
     // Whether a course is in scope, stored as 0 or 1 and filled lazily per course.
     // Keyed by the scope configuration hash and the course ID.
     'scopecoursemembership' => [

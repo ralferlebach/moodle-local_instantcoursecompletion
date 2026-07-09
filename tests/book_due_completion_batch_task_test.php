@@ -34,7 +34,7 @@ require_once(__DIR__ . '/fixtures/completion_test_trait.php');
  * Batched due-booking task tests.
  *
  * @covers \local_instantcoursecompletion\task\book_due_completion_batch_task
- * @covers \local_instantcoursecompletion\course_booker
+ * @covers \local_instantcoursecompletion\completion_booker::book_criterion
  */
 final class book_due_completion_batch_task_test extends \advanced_testcase {
     use completion_test_trait;
@@ -53,6 +53,15 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
     }
 
     /**
+     * A due time comfortably in the past, so that its rounded-up window is too.
+     *
+     * @return int
+     */
+    protected function overdue_time(): int {
+        return time() - DAYSECS;
+    }
+
+    /**
      * Create a course with an overdue date criterion and the given number of learners.
      *
      * @param int $learners How many tracked learners to enrol.
@@ -60,7 +69,7 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
      */
     protected function overdue_course(int $learners): array {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $criterionid = $this->add_date_criterion($course, time() - DAYSECS);
+        $criterionid = $this->add_date_criterion($course, $this->overdue_time());
 
         $users = [];
         for ($i = 0; $i < $learners; $i++) {
@@ -70,6 +79,22 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         }
 
         return [$course, $criterionid, $users];
+    }
+
+    /**
+     * Plan the head batch for an overdue criterion.
+     *
+     * The due window is derived from the criterion's own due time, not from now: it is
+     * rounded up, so the window of a due time in the future would also be in the future
+     * and the task would not be runnable yet.
+     *
+     * @param \stdClass $course      The course.
+     * @param int       $criterionid The criterion.
+     * @return void
+     */
+    protected function plan_head_batch(\stdClass $course, int $criterionid): void {
+        $bucket = due_scheduler::due_bucket($this->overdue_time());
+        due_scheduler::queue_bucket((int)$course->id, $criterionid, $bucket);
     }
 
     /**
@@ -92,7 +117,12 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
      * @return \core\task\adhoc_task|null The task that ran, or null when none was due.
      */
     protected function run_next_batch(): ?\core\task\adhoc_task {
-        $task = \core\task\manager::get_next_adhoc_task(time() + 1, true, book_due_completion_batch_task::class);
+        // The task manager caches the queue in process-level statics that PHPUnit does not
+        // reset between tests, and the concurrency bookkeeping those statics feed is a
+        // cron-runner concern with no place in a unit test.
+        \core\task\manager::reset_state();
+
+        $task = \core\task\manager::get_next_adhoc_task(time() + 1, false, book_due_completion_batch_task::class);
         if ($task === null) {
             return null;
         }
@@ -113,7 +143,7 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         set_config('batchsize', 10, 'local_instantcoursecompletion');
         [$course, $criterionid, $users] = $this->overdue_course(3);
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
+        $this->plan_head_batch($course, $criterionid);
         $this->assertNotNull($this->run_next_batch());
 
         foreach ($users as $user) {
@@ -121,7 +151,7 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         }
 
         // The page was not full, so nothing follows it.
-        $this->assertCount(0, $this->queued_batch_tasks());
+        $this->assertCount(0, $this->queued_tasks());
     }
 
     /**
@@ -133,14 +163,14 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         set_config('batchsize', 2, 'local_instantcoursecompletion');
         [$course, $criterionid, $users] = $this->overdue_course(5);
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
+        $this->plan_head_batch($course, $criterionid);
         $this->assertNotNull($this->run_next_batch());
 
         $this->assertTrue($this->is_complete($course, $users[0]));
         $this->assertTrue($this->is_complete($course, $users[1]));
         $this->assertFalse($this->is_complete($course, $users[2]));
 
-        $continuation = $this->single_queued_batch_task();
+        $continuation = $this->single_queued_task();
         $this->assertSame((int)$users[1]->id, (int)$continuation->get_custom_data()->lastuserid);
     }
 
@@ -153,11 +183,11 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         set_config('batchsize', 2, 'local_instantcoursecompletion');
         [$course, $criterionid, $users] = $this->overdue_course(5);
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
+        $this->plan_head_batch($course, $criterionid);
 
         // Three pages of two, the last one short.
         $pages = 0;
-        while ($this->run_next_batch() !== null && $pages < 10) {
+        while ($pages < 10 && $this->run_next_batch() !== null) {
             $pages++;
         }
         $this->assertSame(3, $pages);
@@ -165,7 +195,7 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         foreach ($users as $user) {
             $this->assertTrue($this->is_complete($course, $user));
         }
-        $this->assertCount(0, $this->queued_batch_tasks());
+        $this->assertCount(0, $this->queued_tasks());
     }
 
     /**
@@ -177,10 +207,10 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
         [$course, $criterionid, $users] = $this->overdue_course(1);
         $this->mark_criterion_completed($course, $users[0], $criterionid);
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
+        $this->plan_head_batch($course, $criterionid);
         $this->assertNotNull($this->run_next_batch());
 
-        $this->assertCount(0, $this->queued_batch_tasks());
+        $this->assertCount(0, $this->queued_tasks());
     }
 
     /**
@@ -190,11 +220,11 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
      */
     public function test_batch_ignores_untracked_users(): void {
         $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $criterionid = $this->add_date_criterion($course, time() - DAYSECS);
+        $criterionid = $this->add_date_criterion($course, $this->overdue_time());
         $teacher = $this->getDataGenerator()->create_user();
         $this->enrol_user_direct($course, $teacher, 0, 0, 0, 'editingteacher');
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
+        $this->plan_head_batch($course, $criterionid);
         $this->assertNotNull($this->run_next_batch());
 
         $this->assertFalse($this->is_complete($course, $teacher));
@@ -208,11 +238,28 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
     public function test_batch_rechecks_the_scope(): void {
         [$course, $criterionid, $users] = $this->overdue_course(1);
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
-        $task = $this->single_queued_batch_task();
+        $this->plan_head_batch($course, $criterionid);
+        $task = $this->single_queued_task();
 
         $this->restrict_scope_to_new_category();
         $task->execute();
+
+        $this->assertFalse($this->is_complete($course, $users[0]));
+    }
+
+    /**
+     * A criterion removed between planning and execution is not booked.
+     *
+     * @return void
+     */
+    public function test_batch_tolerates_a_removed_criterion(): void {
+        global $DB;
+        [$course, $criterionid, $users] = $this->overdue_course(1);
+
+        $this->plan_head_batch($course, $criterionid);
+        $DB->delete_records('course_completion_criteria', ['id' => $criterionid]);
+
+        $this->assertNotNull($this->run_next_batch());
 
         $this->assertFalse($this->is_complete($course, $users[0]));
     }
@@ -222,13 +269,13 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
      *
      * @return void
      */
-    public function test_queue_batch_is_idempotent(): void {
+    public function test_queue_bucket_is_idempotent(): void {
         [$course, $criterionid] = $this->overdue_course(1);
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
+        $this->plan_head_batch($course, $criterionid);
+        $this->plan_head_batch($course, $criterionid);
 
-        $this->assertCount(1, $this->queued_batch_tasks());
+        $this->assertCount(1, $this->queued_tasks());
     }
 
     /**
@@ -238,10 +285,12 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
      */
     public function test_continuation_does_not_collide_with_the_head(): void {
         [$course, $criterionid, $users] = $this->overdue_course(1);
+        $bucket = due_scheduler::due_bucket($this->overdue_time());
 
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time());
-        due_scheduler::queue_batch((int)$course->id, $criterionid, time(), (int)$users[0]->id);
+        due_scheduler::queue_bucket((int)$course->id, $criterionid, $bucket);
+        due_scheduler::queue_continuation((int)$course->id, $criterionid, $bucket, (int)$users[0]->id);
 
-        $this->assertCount(2, $this->queued_batch_tasks());
+        $this->assertCount(2, $this->queued_tasks());
+        $this->assertCount(1, $this->queued_continuations());
     }
 }

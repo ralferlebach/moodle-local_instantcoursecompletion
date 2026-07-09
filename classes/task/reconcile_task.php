@@ -24,7 +24,7 @@
 
 namespace local_instantcoursecompletion\task;
 
-use local_instantcoursecompletion\course_booker;
+use local_instantcoursecompletion\completion_booker;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -93,7 +93,22 @@ class reconcile_task extends \core\task\scheduled_task {
             }
 
             $fromuserid = ($courseid === $cursor['courseid']) ? $cursor['lastuserid'] : 0;
-            $result = $this->process_course($courseid, $fromuserid, $budget - $scanned);
+
+            try {
+                $result = $this->process_course($courseid, $fromuserid, $budget - $scanned);
+            } catch (\dml_exception | \coding_exception $e) {
+                // A database or programming error, as opposed to one criterion behaving
+                // oddly for one user, is not something retrying the next user fixes. The
+                // cursor is left where it was, so the same course is retried next run, and
+                // the exception propagates so cron surfaces the failure instead of a scan
+                // silently limping through the rest of the site.
+                $failed++;
+                if ($logging || $failed > 0) {
+                    mtrace('local_instantcoursecompletion reconcile_task:'
+                        . " aborted on course={$courseid}: " . $e->getMessage());
+                }
+                throw $e;
+            }
 
             $scanned += $result['scanned'];
             $booked += $result['booked'];
@@ -176,7 +191,8 @@ class reconcile_task extends \core\task\scheduled_task {
     protected function eligible_course_ids(int $fromcourseid): array {
         global $DB;
 
-        $courseids = $DB->get_fieldset_sql(
+        // A fieldset query takes no limit; get_records_sql() keys by the first column.
+        $records = $DB->get_records_sql(
             "SELECT DISTINCT cc.course
                FROM {course_completion_criteria} cc
                JOIN {course} c ON c.id = cc.course AND c.enablecompletion = 1
@@ -187,7 +203,7 @@ class reconcile_task extends \core\task\scheduled_task {
             self::MAX_COURSES_PER_RUN
         );
 
-        return array_map('intval', $courseids);
+        return array_map('intval', array_keys($records));
     }
 
     /**
@@ -204,12 +220,6 @@ class reconcile_task extends \core\task\scheduled_task {
      */
     protected function process_course(int $courseid, int $fromuserid, int $budget): array {
         global $DB;
-
-        // The course, its completion_info and its criteria are read once for the slice.
-        $booker = course_booker::for_course($courseid);
-        if ($booker === null) {
-            return ['scanned' => 0, 'booked' => 0, 'failed' => 0, 'lastuserid' => $fromuserid, 'more' => false];
-        }
 
         $context = \context_course::instance($courseid);
         [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
@@ -235,9 +245,12 @@ class reconcile_task extends \core\task\scheduled_task {
             $lastuserid = (int)$record->userid;
 
             try {
-                if ($booker->book($lastuserid)) {
+                if (completion_booker::book($courseid, $lastuserid)) {
                     $booked++;
                 }
+            } catch (\dml_exception | \coding_exception $e) {
+                $recordset->close();
+                throw $e;
             } catch (\Throwable $e) {
                 $failed++;
                 debugging(

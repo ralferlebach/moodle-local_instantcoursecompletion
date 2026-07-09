@@ -100,7 +100,7 @@ class scope_resolver {
             return (bool)$cached;
         }
 
-        $inscope = self::evaluate_membership($courseid, $filter);
+        $inscope = self::evaluate_membership($courseid, $mode, $filter);
         $cache->set($key, $inscope ? 1 : 0);
         return $inscope;
     }
@@ -113,6 +113,7 @@ class scope_resolver {
     public static function purge_cache(): void {
         \cache::make(self::COMPONENT, 'scopecategoryids')->purge();
         \cache::make(self::COMPONENT, 'scopecoursemembership')->purge();
+        \cache::make(self::COMPONENT, 'scopetagids')->purge();
     }
 
     /**
@@ -149,11 +150,12 @@ class scope_resolver {
     /**
      * Decide membership for one course against the filter definition.
      *
-     * @param int   $courseid Course ID.
-     * @param array $filter   Filter definition.
+     * @param int    $courseid Course ID.
+     * @param string $mode     Effective scope mode, for the tag-ID cache key.
+     * @param array  $filter   Filter definition.
      * @return bool
      */
-    protected static function evaluate_membership(int $courseid, array $filter): bool {
+    protected static function evaluate_membership(int $courseid, string $mode, array $filter): bool {
         [$categoryids, $includetags, $excludetags] = $filter;
 
         $categoryset = self::scope_category_ids($categoryids);
@@ -171,33 +173,31 @@ class scope_resolver {
             return false;
         }
 
-        return self::course_matches_tags($courseid, $includetags, $excludetags);
+        [$includeids, $excludeids] = self::scope_tag_ids($mode, $filter, $includetags, $excludetags);
+
+        return self::course_matches_tags($courseid, $includeids, $excludeids, !empty($includetags));
     }
 
     /**
      * Does the course satisfy the include and exclude tag filters?
      *
-     * @param int      $courseid    Course ID.
-     * @param string[] $includetags Course must carry at least one of these tags, if any.
-     * @param string[] $excludetags Course must carry none of these tags.
+     * @param int   $courseid       Course ID.
+     * @param int[] $includeids     Course must carry at least one of these tag IDs, if any were named.
+     * @param int[] $excludeids     Course must carry none of these tag IDs.
+     * @param bool  $includenamed   Whether the include filter named any tags at all.
      * @return bool
      */
-    protected static function course_matches_tags(int $courseid, array $includetags, array $excludetags): bool {
-        if (empty($includetags) && empty($excludetags)) {
-            return true;
-        }
-
-        $includeids = self::resolve_tag_ids($includetags);
-        if (!empty($includetags) && empty($includeids)) {
-            // The filter names only tags that do not exist, so nothing can match it.
-            return false;
+    protected static function course_matches_tags(int $courseid, array $includeids, array $excludeids, bool $includenamed): bool {
+        if (empty($includeids) && empty($excludeids)) {
+            // Either no filter is configured, or the include filter names only tags
+            // that do not exist, in which case nothing can match it.
+            return !$includenamed;
         }
 
         $coursetagids = array_map('intval', array_keys(
             \core_tag_tag::get_item_tags_array('core', 'course', $courseid, \core_tag_tag::BOTH_STANDARD_AND_NOT, 0, false)
         ));
 
-        $excludeids = self::resolve_tag_ids($excludetags);
         if (!empty($excludeids) && array_intersect($coursetagids, $excludeids)) {
             return false;
         }
@@ -206,6 +206,36 @@ class scope_resolver {
         }
 
         return true;
+    }
+
+    /**
+     * Resolve and cache the tag IDs for the current filter, once per configuration.
+     *
+     * Without this, a run that checks many courses under a cache miss would resolve
+     * the same handful of tag names again for every single course.
+     *
+     * @param string   $mode        Effective scope mode.
+     * @param array    $filter      Filter definition, for the cache key.
+     * @param string[] $includetags Include tag names.
+     * @param string[] $excludetags Exclude tag names.
+     * @return array{0: int[], 1: int[]} Include tag IDs, exclude tag IDs.
+     */
+    protected static function scope_tag_ids(string $mode, array $filter, array $includetags, array $excludetags): array {
+        if (empty($includetags) && empty($excludetags)) {
+            return [[], []];
+        }
+
+        $cache = \cache::make(self::COMPONENT, 'scopetagids');
+        $key = self::filter_hash($mode, $filter);
+
+        $cached = $cache->get($key);
+        if ($cached !== false) {
+            return $cached;
+        }
+
+        $ids = [self::resolve_tag_ids($includetags), self::resolve_tag_ids($excludetags)];
+        $cache->set($key, $ids);
+        return $ids;
     }
 
     /**
@@ -298,10 +328,12 @@ class scope_resolver {
         }
 
         $collectionid = \core_tag_area::get_collection('core', 'course');
+        // The bulk lookup indexes its result by $record->name, so name must be selected.
+        $tags = \core_tag_tag::get_by_name_bulk($collectionid, $names, 'id, name');
+
         $ids = [];
-        foreach ($names as $name) {
-            $tag = \core_tag_tag::get_by_name($collectionid, $name, 'id');
-            if ($tag) {
+        foreach ($tags as $tag) {
+            if ($tag !== null) {
                 $ids[] = (int)$tag->id;
             }
         }

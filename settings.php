@@ -24,6 +24,8 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+use local_instantcoursecompletion\admin\bounded_int_setting;
+use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
 if ($hassiteconfig) {
@@ -119,21 +121,38 @@ if ($hassiteconfig) {
         ));
         $settings->hide_if($component . '/schedulinghorizon', $component . '/schedulingenabled', 'notchecked');
 
-        $settings->add(new admin_setting_configtext(
+        // The discovery task runs hourly (db/tasks.php); a horizon shorter than that
+        // plus the batch window would let due times pass before anything plans them.
+        $minhorizon = HOURSECS + due_scheduler::BATCH_WINDOW;
+        $currenthorizon = (int)get_config($component, 'schedulinghorizon');
+        if ((bool)get_config($component, 'schedulingenabled') && $currenthorizon > 0 && $currenthorizon < $minhorizon) {
+            $settings->add(new admin_setting_description(
+                $component . '/horizontooshort',
+                '',
+                $OUTPUT->notification(
+                    get_string('warning:horizontooshort', $component, format_time($minhorizon)),
+                    'warning'
+                )
+            ));
+        }
+
+        $settings->add(new bounded_int_setting(
             $component . '/batchsize',
             get_string('setting:batchsize', $component),
             get_string('setting:batchsize_desc', $component),
             500,
-            PARAM_INT
+            1,
+            50000
         ));
         $settings->hide_if($component . '/batchsize', $component . '/schedulingenabled', 'notchecked');
 
-        $settings->add(new admin_setting_configtext(
+        $settings->add(new bounded_int_setting(
             $component . '/maxtasksperrun',
             get_string('setting:maxtasksperrun', $component),
             get_string('setting:maxtasksperrun_desc', $component),
             5000,
-            PARAM_INT
+            1,
+            100000
         ));
         $settings->hide_if($component . '/maxtasksperrun', $component . '/schedulingenabled', 'notchecked');
 
@@ -144,12 +163,13 @@ if ($hassiteconfig) {
             0
         ));
 
-        $settings->add(new admin_setting_configtext(
+        $settings->add(new bounded_int_setting(
             $component . '/reconcilebudget',
             get_string('setting:reconcilebudget', $component),
             get_string('setting:reconcilebudget_desc', $component),
             5000,
-            PARAM_INT
+            1,
+            100000
         ));
         $settings->hide_if($component . '/reconcilebudget', $component . '/reconcile_enabled', 'notchecked');
 
