@@ -8,6 +8,69 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-09
+
+Zeitbasierte Kriterien werden nicht mehr per Vollscan gesucht, sondern im Voraus
+geplant. Der Sicherheitsnetz-Task bleibt als Recovery-Mechanismus dahinter.
+
+### Added
+
+- **`discover_due_criteria_task`** (scheduled, stündlich): ermittelt Datums- und
+  Dauer-Kriterien, die innerhalb des Planungshorizonts fällig werden, und reiht je
+  `(courseid, userid, duetime)` genau einen Ad-hoc-Task ein.
+- **`book_due_completion_task`** (adhoc): verbucht genau ein Kurs-Nutzer-Paar zum
+  Fälligkeitszeitpunkt. Prüft den Wirkungsbereich erneut, da sich die Einstellungen
+  zwischen Planung und Ausführung geändert haben können.
+- Einstellungen `schedulingenabled` (Default an), `schedulinghorizon`
+  (Default 7 Tage) und `maxtasksperrun` (Default 5000).
+
+### Design
+
+- **Kein unbegrenzter Abruf.** Je Lauf höchstens 200 Kurse (Cursor über Kurs-IDs in
+  `config_plugins`) und höchstens `maxtasksperrun` Tasks. Nutzerlisten laufen über
+  `get_recordset_sql()` mit `LIMIT`, nie über `get_fieldset_sql()`.
+- **Der Horizont ist tragendes Element, nicht Feinschliff.** Ohne ihn stünden auf
+  einer Instanz mit 200.000 Einschreibungen und einem Dauer-Kriterium 200.000 Zeilen
+  in `{task_adhoc}`, teils Jahre in der Zukunft. Der Horizont muss länger sein als
+  der Abstand zweier Discovery-Läufe.
+- **Ein Vorab-SELECT statt eines SELECTs je Enqueue.** `queue_adhoc_task($task, true)`
+  ruft intern `task_is_scheduled()` und damit ein `get_record_select()` pro Aufruf —
+  bei 5.000 Planungen also 5.000 Abfragen. Die Discovery lädt die anstehenden
+  `customdata` einmal vorab in ein Hashset und ruft `queue_adhoc_task($task, false)`.
+  Der Vorab-Abruf ist auf 50.000 Zeilen gedeckelt: die Länge der Warteschlange hängt
+  von der Fälligkeitsdichte ab, nicht von einer Grösse, die dieser Task kontrolliert.
+  Wird die Grenze erreicht, ist das Hashset unvollständig und der Lauf fällt für die
+  Deduplizierung auf `queue_adhoc_task($task, true)` zurück — langsamer, aber korrekt.
+- **Kanonische `customdata`.** `adhoc_task::set_custom_data()` ist `json_encode()`, und
+  `\core\task\manager` vergleicht die Zeichenkette exakt. Die Schlüssel werden daher
+  in fester Reihenfolge geschrieben (`courseid`, `duetime`, `userid`); eine andere
+  Reihenfolge wäre ein anderer Task.
+- **Jitter.** Ein Datums-Kriterium wird für alle Teilnehmer zur selben Sekunde fällig.
+  `nextruntime` wird deterministisch über `userid % 900` gestreut, damit ein einzelner
+  Cron-Lauf nicht eine ganze Kohorte auf einmal abarbeiten muss. Der Jitter steht
+  bewusst **nicht** in der `customdata` und stört die Deduplizierung nicht.
+- **Überfällige Kriterien** werden mit `nextruntime = jetzt` geplant, nicht übersprungen.
+- **Dauer-Kriterien** folgen der Cron-Regel des Cores: früheste Einschreibung,
+  `ue.timestart`, ersatzweise `ue.timecreated`. Die Fälligkeitsgrenze wird als
+  `HAVING MIN(...) <= :latest` mit `latest = horizont - enrolperiod` geprüft, statt
+  auf dem Aggregat zu rechnen — portabel über MariaDB und PostgreSQL.
+- **Kein Reschedule bei geänderter Fälligkeit.** Verschiebt sich `duetime`, entsteht ein
+  zweiter Task; der alte findet die Kriterien nicht erfüllt und endet folgenlos.
+  Ein Aufräum-DELETE auf `{task_adhoc}` wäre riskant und unterbleibt bewusst.
+
+### Added — Tests
+
+- Horizont (innerhalb, ausserhalb, überfällig), Deduplizierung über zwei Läufe,
+  Budget-Deckelung, Wirkungsbereich, abgelaufene Einschreibung, bereits abgeschlossener
+  Kurs, bereits erfülltes Kriterium, Dauer über `timestart` und über `timecreated`,
+  sowie ein End-to-End-Lauf des geplanten Tasks bis zur verbuchten Completion.
+
+### Offen
+
+- Entfernung des Synchron-Modus.
+- Ereignisgesteuerte Sofortplanung bei Einschreibung oder Kriterienänderung; die
+  Discovery wäre danach reiner Recovery-Mechanismus.
+
 ## [0.4.2] - 2026-07-09
 
 Der Scope-Cache skaliert nicht mehr mit der Kursanzahl. Zusätzlich der Fix für die

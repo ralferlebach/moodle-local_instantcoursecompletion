@@ -17,6 +17,9 @@
 /**
  * Scheduled task definitions for local_instantcoursecompletion.
  *
+ * The discovery task must run more often than the scheduling horizon is long, or due
+ * times pass unplanned. The reconcile task is the recovery net behind it.
+ *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
@@ -25,6 +28,15 @@
 defined('MOODLE_INTERNAL') || die();
 
 $tasks = [
+    [
+        'classname' => '\local_instantcoursecompletion\task\discover_due_criteria_task',
+        'blocking' => 0,
+        'minute' => '7',
+        'hour' => '*',
+        'day' => '*',
+        'month' => '*',
+        'dayofweek' => '*',
+    ],
     [
         'classname' => '\local_instantcoursecompletion\task\reconcile_task',
         'blocking' => 0,

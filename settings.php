@@ -116,6 +116,30 @@ if ($hassiteconfig) {
         ));
 
         $settings->add(new admin_setting_configcheckbox(
+            $component . '/schedulingenabled',
+            get_string('setting:schedulingenabled', $component),
+            get_string('setting:schedulingenabled_desc', $component),
+            1
+        ));
+
+        $settings->add(new admin_setting_configduration(
+            $component . '/schedulinghorizon',
+            get_string('setting:schedulinghorizon', $component),
+            get_string('setting:schedulinghorizon_desc', $component),
+            WEEKSECS
+        ));
+        $settings->hide_if($component . '/schedulinghorizon', $component . '/schedulingenabled', 'notchecked');
+
+        $settings->add(new admin_setting_configtext(
+            $component . '/maxtasksperrun',
+            get_string('setting:maxtasksperrun', $component),
+            get_string('setting:maxtasksperrun_desc', $component),
+            5000,
+            PARAM_INT
+        ));
+        $settings->hide_if($component . '/maxtasksperrun', $component . '/schedulingenabled', 'notchecked');
+
+        $settings->add(new admin_setting_configcheckbox(
             $component . '/reconcile_enabled',
             get_string('setting:reconcile', $component),
             get_string('setting:reconcile_desc', $component),
