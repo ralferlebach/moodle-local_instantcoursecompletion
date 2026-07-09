@@ -8,6 +8,44 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-09
+
+Release-Vorbereitung. Der Audit-Stack aus 0.4.0–0.4.3 ist abgearbeitet, lokal und in
+der CI grün auf Moodle 4.5–5.2 × MariaDB/PostgreSQL.
+
+### Changed
+
+- **Maturity: `MATURITY_ALPHA` → `MATURITY_BETA`.**
+- **README vollständig neu.** Beschreibt jetzt, was das Plugin tatsächlich tut: die
+  zweistufige Core-Pipeline (`crit_compl` → `aggregate_completions()`), die Tabelle,
+  welcher Kriterientyp von wem behandelt wird, das Discovery-/Ad-hoc-Modell mit
+  Horizont und Jitter, sowie die beiden Test-Fallstricke (`preventResetByRollback()`
+  unter pgsql, Einschreibung per direktem Insert). Die alte Behauptung, das Plugin
+  delegiere die Auswertung vollständig an die Core-API, war seit 0.2.2 unzutreffend
+  und ist seit 0.4.0 wieder wahr.
+- **`discover_due_criteria_task` refaktoriert.** `$pending` und `$prefetchcomplete`
+  sind Lauf-Zustand des Tasks und jetzt Instanz-Properties statt Parameter, die durch
+  vier Signaturen gereicht wurden. Damit passt jeder Aufruf wieder in eine Zeile.
+  Behebt 16 phpcs-Verstösse (`PEAR.Functions.FunctionCallSignature`) und reduziert die
+  Parameterzahl der Scheduler-Methoden von sieben auf fünf.
+
+### Added — Behat
+
+- Wirkungsbereich-Auswahl enthält die dokumentierten Modi, aber ohne `adele`, solange
+  `local_adele` fehlt.
+- Speichern eines Kategorien-Scopes hält die Auswahl.
+- Report warnt bei deaktivierter Protokollierung und meldet ein leeres Ergebnis, sobald
+  sie aktiv ist.
+- `@javascript`: `hide_if` blendet Kategorie- und Tag-Felder ausserhalb des
+  Kategorien-Scopes aus, sowie Horizont und Budget bei abgeschalteter Planung.
+
+### Offen
+
+- **Entfernung des Synchron-Modus.** Die einzige verbliebene Einstellung, die
+  Completion-Prüfungen in den Webrequest zieht. Vor einem 1.0.0 zu entscheiden.
+- Ereignisgesteuerte Sofortplanung bei Einschreibung oder Kriterienänderung; die
+  Discovery wäre danach reiner Recovery-Mechanismus.
+
 ## [0.4.3] - 2026-07-09
 
 Zeitbasierte Kriterien werden nicht mehr per Vollscan gesucht, sondern im Voraus

@@ -45,6 +45,12 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     /** @var int Upper bound on the pending tasks pre-loaded for de-duplication. */
     protected const MAX_PENDING_PREFETCH = 50000;
 
+    /** @var array<string, bool> Custom data of the booking tasks already queued. */
+    protected $pending = [];
+
+    /** @var bool Whether $pending holds every queued task inside the horizon. */
+    protected $prefetchcomplete = true;
+
     /**
      * Human-readable task name for the admin UI.
      *
@@ -83,9 +89,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             return;
         }
 
-        // One query for every task already pending, instead of one per enqueue. If the
-        // queue is larger than the prefetch bound, fall back to the per-enqueue check.
-        [$pending, $prefetchcomplete] = $this->pending_task_keys($horizon);
+        $this->load_pending_tasks($horizon);
 
         $queued = 0;
         $exhausted = false;
@@ -102,7 +106,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
                 continue;
             }
 
-            $made = $this->schedule_course($courseid, $now, $horizon, $remaining, $pending, $prefetchcomplete);
+            $made = $this->schedule_course($courseid, $now, $horizon, $remaining);
             $queued += $made;
 
             if ($made >= $remaining) {
@@ -129,7 +133,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * How far ahead bookings are planned.
      *
      * The horizon bounds the number of rows this task can add to the ad-hoc queue.
-     * It has to exceed the interval between two runs, or due times are missed.
+     * It has to exceed the interval between two runs, or due times pass unplanned.
      *
      * @return int Seconds.
      */
@@ -159,16 +163,17 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     }
 
     /**
-     * The custom data of the booking tasks already queued inside the horizon.
+     * Read the booking tasks already queued inside the horizon into memory.
      *
-     * The read is capped, because the pending queue grows with the number of due
-     * bookings and not with anything this task controls. When the cap is reached the
-     * set is incomplete and callers must ask the database per enqueue instead.
+     * One query replaces the one that \core\task\manager would otherwise run per
+     * enqueue. The read is capped, because the pending queue grows with the number of
+     * due bookings and not with anything this task controls. When the cap is reached
+     * the set is incomplete and queue_due_task() asks the database instead.
      *
      * @param int $horizon Latest due time being planned for.
-     * @return array{0: array<string, bool>, 1: bool} Custom-data keys, and whether they are complete.
+     * @return void
      */
-    protected function pending_task_keys(int $horizon): array {
+    protected function load_pending_tasks(int $horizon): void {
         global $DB;
 
         $customdata = $DB->get_fieldset_sql(
@@ -185,8 +190,8 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             self::MAX_PENDING_PREFETCH
         );
 
-        $complete = count($customdata) < self::MAX_PENDING_PREFETCH;
-        return [array_fill_keys($customdata, true), $complete];
+        $this->pending = array_fill_keys($customdata, true);
+        $this->prefetchcomplete = count($customdata) < self::MAX_PENDING_PREFETCH;
     }
 
     /**
@@ -224,64 +229,39 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     /**
      * Queue the due bookings of one course, up to the remaining budget.
      *
-     * @param int   $courseid Course to plan.
-     * @param int   $now      Current time.
-     * @param int   $horizon  Latest due time being planned for.
-     * @param int   $budget   Maximum number of tasks to queue.
-     * @param array $pending  Custom-data keys already queued; updated in place.
-     * @param bool  $complete Whether $pending holds every queued task.
+     * @param int $courseid Course to plan.
+     * @param int $now      Current time.
+     * @param int $horizon  Latest due time being planned for.
+     * @param int $budget   Maximum number of tasks to queue.
      * @return int Number of tasks queued.
      */
-    protected function schedule_course(
-        int $courseid,
-        int $now,
-        int $horizon,
-        int $budget,
-        array &$pending,
-        bool $complete
-    ): int {
+    protected function schedule_course(int $courseid, int $now, int $horizon, int $budget): int {
         global $DB;
 
-        [$typesql, $typeparams] = $DB->get_in_or_equal(
+        [$typesql, $params] = $DB->get_in_or_equal(
             [COMPLETION_CRITERIA_TYPE_DATE, COMPLETION_CRITERIA_TYPE_DURATION],
             SQL_PARAMS_NAMED,
             'ct'
         );
-        $typeparams['course'] = $courseid;
+        $params['course'] = $courseid;
         $criteria = $DB->get_records_select(
             'course_completion_criteria',
             "course = :course AND criteriatype $typesql",
-            $typeparams,
+            $params,
             'id ASC'
         );
 
         $queued = 0;
         foreach ($criteria as $criterion) {
-            if ($queued >= $budget) {
+            $limit = $budget - $queued;
+            if ($limit <= 0) {
                 break;
             }
-            $limit = $budget - $queued;
 
             if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
-                $queued += $this->schedule_date_criterion(
-                    $courseid,
-                    $criterion,
-                    $now,
-                    $horizon,
-                    $limit,
-                    $pending,
-                    $complete
-                );
+                $queued += $this->schedule_date_criterion($courseid, $criterion, $now, $horizon, $limit);
             } else {
-                $queued += $this->schedule_duration_criterion(
-                    $courseid,
-                    $criterion,
-                    $now,
-                    $horizon,
-                    $limit,
-                    $pending,
-                    $complete
-                );
+                $queued += $this->schedule_duration_criterion($courseid, $criterion, $now, $horizon, $limit);
             }
         }
 
@@ -296,19 +276,9 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * @param int       $now       Current time.
      * @param int       $horizon   Latest due time being planned for.
      * @param int       $budget    Maximum number of tasks to queue.
-     * @param array     $pending   Custom-data keys already queued; updated in place.
-     * @param bool      $complete  Whether $pending holds every queued task.
      * @return int Number of tasks queued.
      */
-    protected function schedule_date_criterion(
-        int $courseid,
-        \stdClass $criterion,
-        int $now,
-        int $horizon,
-        int $budget,
-        array &$pending,
-        bool $complete
-    ): int {
+    protected function schedule_date_criterion(int $courseid, \stdClass $criterion, int $now, int $horizon, int $budget): int {
         global $DB;
 
         $duetime = (int)$criterion->timeend;
@@ -333,7 +303,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         $queued = 0;
         $recordset = $DB->get_recordset_sql($sql, $params, 0, $budget);
         foreach ($recordset as $record) {
-            if ($this->queue_due_task($courseid, (int)$record->userid, $duetime, $now, $pending, $complete)) {
+            if ($this->queue_due_task($courseid, (int)$record->userid, $duetime, $now)) {
                 $queued++;
             }
         }
@@ -346,26 +316,18 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * Queue bookings for a duration criterion, which falls due per user.
      *
      * The earliest enrolment wins, and an enrolment without a start date counts from
-     * its creation time; both rules match completion_criteria_duration::cron().
+     * its creation time; both rules match completion_criteria_duration::cron(). The
+     * horizon is applied to the enrolment time rather than to the computed due time,
+     * so no arithmetic is performed on the aggregate.
      *
      * @param int       $courseid  Course ID.
      * @param \stdClass $criterion Criterion record.
      * @param int       $now       Current time.
      * @param int       $horizon   Latest due time being planned for.
      * @param int       $budget    Maximum number of tasks to queue.
-     * @param array     $pending   Custom-data keys already queued; updated in place.
-     * @param bool      $complete  Whether $pending holds every queued task.
      * @return int Number of tasks queued.
      */
-    protected function schedule_duration_criterion(
-        int $courseid,
-        \stdClass $criterion,
-        int $now,
-        int $horizon,
-        int $budget,
-        array &$pending,
-        bool $complete
-    ): int {
+    protected function schedule_duration_criterion(int $courseid, \stdClass $criterion, int $now, int $horizon, int $budget): int {
         global $DB;
 
         $enrolperiod = (int)$criterion->enrolperiod;
@@ -399,7 +361,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         $recordset = $DB->get_recordset_sql($sql, $params, 0, $budget);
         foreach ($recordset as $record) {
             $duetime = (int)$record->timeenrolled + $enrolperiod;
-            if ($this->queue_due_task($courseid, (int)$record->userid, $duetime, $now, $pending, $complete)) {
+            if ($this->queue_due_task($courseid, (int)$record->userid, $duetime, $now)) {
                 $queued++;
             }
         }
@@ -412,27 +374,18 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
      * Queue one booking task unless an identical one is already pending.
      *
      * The custom data is the de-duplication key, compared as a string by
-     * \core\task\manager, so its keys are written in a fixed order. Bookings that
-     * fall due at the same instant are spread over a window to keep a single cron
-     * run from having to process a whole cohort at once; the jitter is deterministic
-     * and stays out of the key.
+     * \core\task\manager, so its keys are written in a fixed order. Bookings that fall
+     * due at the same instant are spread over a window, to keep a single cron run from
+     * having to process a whole cohort at once; the jitter is deterministic and stays
+     * out of the key.
      *
-     * @param int   $courseid Course ID.
-     * @param int   $userid   User ID.
-     * @param int   $duetime  Time the criterion falls due.
-     * @param int   $now      Current time.
-     * @param array $pending  Custom-data keys already queued; updated in place.
-     * @param bool  $complete Whether $pending holds every queued task.
+     * @param int $courseid Course ID.
+     * @param int $userid   User ID.
+     * @param int $duetime  Time the criterion falls due.
+     * @param int $now      Current time.
      * @return bool Whether a task was queued.
      */
-    protected function queue_due_task(
-        int $courseid,
-        int $userid,
-        int $duetime,
-        int $now,
-        array &$pending,
-        bool $complete
-    ): bool {
+    protected function queue_due_task(int $courseid, int $userid, int $duetime, int $now): bool {
         $customdata = (object)[
             'courseid' => $courseid,
             'duetime' => $duetime,
@@ -440,7 +393,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         ];
         $key = json_encode($customdata);
 
-        if (isset($pending[$key])) {
+        if (isset($this->pending[$key])) {
             return false;
         }
 
@@ -450,10 +403,10 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
         // With an incomplete prefetch the queue itself has to be asked, at the cost of
         // one query per enqueue. queue_adhoc_task() returns false when it finds a twin.
-        if (\core\task\manager::queue_adhoc_task($task, !$complete) === false) {
+        if (\core\task\manager::queue_adhoc_task($task, !$this->prefetchcomplete) === false) {
             return false;
         }
-        $pending[$key] = true;
+        $this->pending[$key] = true;
 
         return true;
     }
