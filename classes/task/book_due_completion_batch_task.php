@@ -66,10 +66,10 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
      * A cron that fell behind can leave several due windows of the same criterion runnable
      * at once, each selecting the same "due now" cohort. Separates processes, not call
      * sites: a PostgreSQL advisory lock and a MySQL GET_LOCK are re-entrant within one
-     * database session, so the contention cannot be exercised single-process. A zero
-     * timeout is deliberate — a run that cannot take the lock is a duplicate window another
-     * run is already draining, so it steps aside; discovery or reconcile picks the criterion
-     * up again, so nothing is lost.
+     * database session, so the contention cannot be exercised single-process. The zero
+     * timeout means a run that cannot take the lock steps aside: it is a duplicate window
+     * another run is already draining, and discovery or reconcile picks the criterion up
+     * again, so nothing is lost.
      *
      * @param int $courseid   Course ID.
      * @param int $criteriaid Criterion ID.

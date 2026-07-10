@@ -36,9 +36,8 @@ class due_scheduler {
     /**
      * The granularity due times are rounded up to.
      *
-     * Every criterion falling due inside one window shares a single batch task. The
-     * window replaces the per-user jitter of earlier versions and delays a booking by
-     * no more than the jitter already did.
+     * Every criterion falling due inside one window shares a single batch task, and a
+     * booking is delayed by at most the width of one window.
      *
      * @var int
      */

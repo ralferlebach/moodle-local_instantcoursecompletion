@@ -120,9 +120,14 @@ final class observer_test extends \advanced_testcase {
         $tasks = $this->queued_tasks();
         $this->assertCount(1, $tasks);
 
-        $data = reset($tasks)->get_custom_data();
+        $task = reset($tasks);
+        $data = $task->get_custom_data();
         $this->assertSame((int)$course->id, (int)$data->courseid);
         $this->assertSame((int)$user->id, (int)$data->userid);
+
+        // The learner is the task owner so the de-duplication lookup uses the indexed
+        // userid column.
+        $this->assertSame((int)$user->id, (int)$task->get_userid());
     }
 
     /**
@@ -346,10 +351,14 @@ final class observer_test extends \advanced_testcase {
         $notifications = $this->queued_notifications();
         $this->assertCount(1, $notifications);
 
-        $data = reset($notifications)->get_custom_data();
+        $task = reset($notifications);
+        $data = $task->get_custom_data();
         $this->assertSame((int)$prerequisite->id, (int)$data->courseid);
         $this->assertSame((int)$user->id, (int)$data->userid);
         $this->assertSame(0, (int)$data->fromcourseid);
+
+        // The fan-out is a system task; no learner is attached as its owner.
+        $this->assertNull($task->get_userid());
     }
 
     /**

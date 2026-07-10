@@ -98,7 +98,6 @@ class observer {
             'userid' => $userid,
             'fromcourseid' => 0,
         ]);
-        $task->set_userid($userid);
 
         try {
             \core\task\manager::queue_adhoc_task($task, true);

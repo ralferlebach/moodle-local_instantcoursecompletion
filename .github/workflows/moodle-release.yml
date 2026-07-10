@@ -8,7 +8,7 @@
 #   Moodle 4.5  PHP 8.2 (pgsql/15)  + PHP 8.3 (mariadb/10.11)
 #   Moodle 5.0  PHP 8.3 (pgsql/15)  + PHP 8.4 (mariadb/10.11)
 #   Moodle 5.1  PHP 8.3 (pgsql/17)  + PHP 8.4 (mariadb/11.4)
-#   Moodle 5.2  PHP 8.4 (pgsql/17)  + PHP 8.5 (mariadb/11.4)
+#   Moodle 5.2  PHP 8.3 (pgsql/17)  + PHP 8.4 (mariadb/11.4)
 #
 # Selenium is started as a GHA service (pre-pulled). The PHP built-in web
 # server is started on port 8000 before Behat init. --start-servers is NOT
@@ -181,7 +181,7 @@ jobs:
         run: moodle-plugin-ci phplint
 
       - name: PHP Copy/Paste Detector
-        run: moodle-plugin-ci phpcpd || true
+        run: moodle-plugin-ci phpcpd
 
       - name: Moodle Code Checker (PHPCS)
         run: moodle-plugin-ci phpcs --max-warnings 0
@@ -222,3 +222,37 @@ jobs:
             echo "CI result: $result — one or more matrix jobs failed or were cancelled."
             exit 1
           fi
+
+  package:
+    name: Release package
+    needs: ci-complete
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Working tree matches the commit
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Working tree is not clean; a release must build from committed sources only:"
+            git status --porcelain
+            exit 1
+          fi
+
+      - name: Build the package from git archive
+        run: |
+          git archive --format=zip \
+            --prefix=instantcoursecompletion/ \
+            -o "${{ runner.temp }}/instantcoursecompletion.zip" \
+            HEAD
+          echo "Package contents (developer artefacts are export-ignored):"
+          unzip -l "${{ runner.temp }}/instantcoursecompletion.zip"
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: instantcoursecompletion
+          path: ${{ runner.temp }}/instantcoursecompletion.zip
+          if-no-files-found: error

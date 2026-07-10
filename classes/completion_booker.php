@@ -239,9 +239,9 @@ final class completion_booker {
      * The lock is per (course, user), not per course: a page-wide lock would serialise
      * an entire batch behind whichever user happens to also be mid-booking elsewhere.
      *
-     * A short timeout is deliberate. If the pair is genuinely being booked elsewhere,
-     * that call will finish the work; there is nothing for this one to contribute by
-     * waiting, and the criteria will be re-evaluated the next time anything asks again.
+     * The timeout is short: if the pair is being booked elsewhere, that call finishes the
+     * work, so this one gives up rather than wait, and the criteria are re-evaluated the
+     * next time anything asks again.
      *
      * @param int $userid User ID.
      * @return \core\lock\lock|null The lock, or null when it could not be taken in time.

@@ -10,6 +10,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed (kein Versions-Increment)
 
+- **phpcs: überflüssiger `MOODLE_INTERNAL`-Guard.** `tests/caches_test.php` hatte einen
+  `defined('MOODLE_INTERNAL') || die();`-Guard, den der `moodle`-Standard hier beanstandet
+  („No side effects or multiple artifacts detected") — anders als die übrigen Testdateien
+  lädt diese Datei am Dateikopf kein `require_once`, ist also seiteneffektfrei. Guard
+  entfernt; nur ein Lint-Fix, PHPUnit war bereits grün (125 Tests).
+
 - **phpcs: eine Klasse je Datei.** Die zwei Timeout-Test-Helfer (`..._zero_runtime`,
   Task-Unterklassen mit `max_runtime()` → 0) lagen am Ende ihrer Testdatei; Moodles
   `moodle`-Standard verlangt „Each class must be in a file by itself". Nach
@@ -70,16 +76,19 @@ die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem sp�
 - **G5** — erledigt in 0.5.4 (siehe unten). Caps gesenkt, Laufzeitbudget mit Fortsetzung.
 - **G6** — erledigt in 0.5.3 (siehe unten). Private `queue_task()`.
 
-**Phase H — Release-Disziplin (späteres 0.5.x)**
+**Phase H — Release-Disziplin (0.5.6; H3b offen)**
 
-- **H1** `moodle-release.yml`: `phpcpd || true` kann den Build nie brechen. Genau deshalb
-  blieb `course_booker` unbemerkt.
-- **H2** Release-Job: sauberer Arbeitsbaum erzwingen, Paket aus `git archive`.
-- **H3** Workflow-Kopf nennt PHP 8.5 für Moodle 5.2, die Matrix schliesst es aus.
-- **H4** Test: jede Definition in `db/caches.php` besitzt einen `cachedef_*`-String.
-- **H5** Entscheidungs- und Historienkommentare aus dem Produktivcode entfernen
-  (fünf Fundstellen, alle aus Session 004).
-- **H6** `set_userid()` entscheiden und den Akteur in `completion_booked` testen.
+- **H1** — erledigt in 0.5.6. `phpcpd || true` entschärft (kann den Build wieder brechen).
+- **H2** — erledigt in 0.5.6. Release-Job: sauberer Arbeitsbaum, Paket aus `git archive`.
+- **H3a** — erledigt in 0.5.6. Workflow-Kopf 5.2/PHP-8.5 richtiggestellt (Matrix nutzt 8.3+8.4).
+- **H3b** Zwei vollständige CI-Workflows über `workflow_call` zusammenführen. **Offen** — die
+  beiden Workflows testen komplementäre Matrizen (release: progressive PHP×DB-Paare; ci:
+  PHP-Array mit Excludes); ein Merge ändert die Abdeckung und braucht die Wahl einer
+  kanonischen Matrix. Nur per GitHub-Push verifizierbar, nicht über `make check` — daher nicht
+  mit Code gebündelt.
+- **H4** — erledigt in 0.5.6. Test: jede `db/caches.php`-Definition besitzt einen `cachedef_*`-String.
+- **H5** — erledigt in 0.5.6. Rest der Entscheidungs-/Historienkommentare entfernt.
+- **H6** — erledigt in 0.5.6. `set_userid()` entschieden und der Akteur getestet.
 
 **Vor 1.0.0 / `MATURITY_STABLE`**
 
@@ -87,6 +96,51 @@ die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem sp�
   bestehenden Cursorn. PHPUnit verifiziert die Deckelungen nicht — der
   `get_fieldset_sql()`-Fehler blieb 0.4.7 bis 0.4.10 unentdeckt.
 - Entscheidung zu `composer.json`: für den Betrieb funktionslos.
+
+
+## [0.5.6] - 2026-07-10
+
+### Changed — Release-Disziplin (Phase H)
+
+- **H1 — `phpcpd` darf den Build brechen.** Das `|| true` hinter dem Copy/Paste-Detector im
+  Release-Workflow ist entfernt. Es war da, um die duplizierte SQL zu tolerieren, die G1
+  inzwischen zusammengeführt hat — jetzt greift die Prüfung wieder scharf.
+- **H2 — Release-Paket-Job.** Neuer Job `package` (nach `ci-complete`): erzwingt einen sauberen
+  Arbeitsbaum (`git status --porcelain`), baut das Paket ausschliesslich aus committeten
+  Quellen (`git archive`, respektiert die `export-ignore`-Regeln aus `.gitattributes`) und lädt
+  es als Artefakt hoch.
+- **H3a — Workflow-Kopf richtiggestellt.** Beide Workflows nannten für Moodle 5.2 „PHP 8.5",
+  obwohl die Matrix es ausschliesst (5.2 läuft auf 8.3+8.4). Kopfkommentare korrigiert.
+
+### Added — Test (H4)
+
+- **`caches_test`**: prüft, dass jede Definition in `db/caches.php` einen `cachedef_*`-String in
+  `lang/en` besitzt. Genau diese Prüfung hätte den fehlenden `scopetagids`-String (in 0.5.2
+  nachgezogen) sofort gefunden.
+
+### Changed — `set_userid()` (H6)
+
+- **`notify_dependent_courses_task` trägt keinen Nutzer mehr.** Der Fan-out auf abhängige Kurse
+  ist eine Systemoperation; der abgeschlossene Lerner ist nicht ihr Akteur. `set_userid()` an
+  beiden Stellen (Kopf im Observer, Fortsetzung im Task) entfernt. Die `userid` in den
+  Custom-Data bleibt — sie ist die Datengrundlage, nicht der Task-Besitzer.
+- **`book_completion_task` behält `set_userid()` bewusst.** Der Lerner als Besitzer lässt die
+  De-Duplizierung die indizierte `userid`-Spalte nutzen statt die nicht indizierten Custom-Data
+  zu scannen. Zwei Observer-Tests halten das jetzt fest: der Buchungs-Task trägt den Lerner als
+  Besitzer, der Benachrichtigungs-Task keinen.
+
+### Changed — Kommentare (H5)
+
+- Die restlichen Entscheidungs-/Historienkommentare aus Session 004 auf Verhaltensverträge
+  reduziert: `BATCH_WINDOW` (kein „per-user jitter of earlier versions" mehr) sowie die zwei
+  Lock-Docblocks in `completion_booker` und `book_due_completion_batch_task` (kein „is
+  deliberate" mehr — sie beschreiben jetzt, was der Lock tut, nicht warum er so gewählt wurde).
+
+### Offen
+
+- **H3b** (zwei CI-Workflows über `workflow_call` zusammenführen) ist nicht Teil dieses Patches:
+  die Workflows testen komplementäre Matrizen, ein Merge ändert die Abdeckung und ist nur per
+  GitHub-Push verifizierbar. Wird nach Wahl der kanonischen Matrix separat umgesetzt.
 
 
 ## [0.5.5] - 2026-07-10
