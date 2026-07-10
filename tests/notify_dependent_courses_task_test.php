@@ -44,9 +44,21 @@ final class notify_dependent_courses_task_test extends \advanced_testcase {
         parent::setUp();
         require_once($CFG->libdir . '/completionlib.php');
         $this->resetAfterTest(true);
-        observer::reset_seen();
+        $this->reset_observer_seen();
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
+    }
+
+    /**
+     * Clear the observer's per-request de-duplication registry between tests.
+     *
+     * The registry is a private static that advanced_testcase does not reset on its own.
+     *
+     * @return void
+     */
+    private function reset_observer_seen(): void {
+        $property = new \ReflectionProperty(observer::class, 'seen');
+        $property->setValue(null, []);
     }
 
     /**

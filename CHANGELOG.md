@@ -8,6 +8,24 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (kein Versions-Increment)
+
+- **F4-Test korrigiert.** `test_reconcile_amortises_course_load_across_users()` behauptete,
+  der kursbezogene Booker lese *strikt weniger* als eine `book()`-Fassade je Nutzer.
+  `make check` widerlegte das empirisch: 1359 gegenüber 1327 Reads für 25 Nutzer — der
+  Booker-Pfad las sogar geringfügig mehr. Moodle bedient Kursdatensatz und Kriterienliste
+  bereits aus Request-Caches, sodass das in F2 vermiedene Nachladen **keine messbaren
+  Datenbank-Reads** kostet. F2 bleibt korrekt und sinnvoll (weniger `completion_info`-Aufbau
+  und Kriterien-Neubau je Nutzer), aber der Gewinn ist CPU/Objektaufbau, nicht Reads. Der
+  Test misst jetzt den **marginalen Read-Aufwand je Nutzer** und deckelt ihn — ein ehrlicher,
+  robuster Regressionsschutz gegen Per-Nutzer-Read-Explosionen. Ersetzt durch
+  `test_reconcile_per_user_reads_stay_bounded()`. Damit wird der externe P0-Befund „N+1 in
+  DB-Reads / 5000× Kursladevorgang" relativiert; die skeptische Einschätzung aus
+  `session-004.md` („real, aber keine Grössenordnung") bestätigt sich.
+- **README:** Abschnitt „Booking" ergänzt. Hält die Entscheidung fest, den konsolidierten
+  Service `completion_booker` zu nennen (nicht `course_completion_booker`), und dokumentiert,
+  dass das Einmal-Laden je Kurs eine strukturelle Vereinfachung ist, keine Read-Ersparnis.
+
 ### Geplant — Session 005
 
 Aus dem externen Review vom 2026-07-09, gegen den Stand 0.4.10 verifiziert.
@@ -19,14 +37,12 @@ Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
 
 - **F1** — erledigt in 0.5.0 (siehe unten).
 - **F2** — erledigt in 0.5.1 (siehe unten).
-- **F3** `cachedef_scopetagids` fehlt in beiden Sprachdateien. `setting:maxtasksperrun`
-  und `setting:schedulingenabled_desc` beschreiben die Architektur vor 0.4.7 bzw. 0.4.9.
-  Die README-Aussage „None of the three grows with the number of courses" trifft auf
-  `scopecoursemembership` nicht zu.
+- **F3** — erledigt in 0.5.2 (siehe unten).
 - **F4** — erledigt in 0.5.1 (siehe unten).
-- **F5** Toten Code entfernen: `observer::reset_seen()`, `scope_resolver::csv_to_strings()`,
-  sowie die drei bereits ersetzten Dateien `classes/task/book_due_completion_task.php`,
-  `tests/fixtures/due_criteria_test_trait.php`, `tests/generator/lib.php`.
+- **F5** — erledigt in 0.5.2 (siehe unten). Die drei Alt-Dateien
+  (`book_due_completion_task.php`, `due_criteria_test_trait.php`, `generator/lib.php`)
+  waren bereits vor Session 005 aus dem Repo gelöscht; offen blieben nur
+  `observer::reset_seen()` und `scope_resolver::csv_to_strings()`.
 
 **Phase G — DRY und Betriebssicherheit (Ziel 0.6.0)**
 
@@ -59,6 +75,35 @@ Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
 - Entscheidung zu `composer.json`: für den Betrieb funktionslos.
 
 
+## [0.5.2] - 2026-07-10
+
+### Fixed — Sprachstrings und README (F3)
+
+- **`cachedef_scopetagids` ergänzt** (EN + DE). Die Cache-Definition existierte in
+  `db/caches.php`, der Sprachstring fehlte in beiden Dateien — ein Verstoss gegen den
+  Moodle-Standard, dass jede Cache-Definition einen `cachedef_*`-String besitzt.
+- **`setting:maxtasksperrun`** hiess „Maximum bookings planned per run" / „Maximale
+  Planungen je Lauf". Begrenzt wird die Zahl **geprüfter Einschreibungsdatensätze**, nicht
+  geplanter Tasks. Titel entsprechend korrigiert.
+- **`setting:schedulingenabled_desc`** beschrieb einen Task „je Kurs, Person und
+  Fälligkeitszeitpunkt" (Architektur vor 0.4.9). Tatsächlich: einer je **Kurs, Kriterium
+  und Fälligkeitsfenster**. Korrigiert.
+- **README:** die Aussage „None of the three grows with the number of courses" traf auf
+  `scopecoursemembership` nicht zu — dieser Cache hält einen Eintrag je berührtem Kurs.
+  Präzisiert.
+
+### Removed — toter Code (F5)
+
+- **`observer::reset_seen()` entfernt.** Die öffentliche Methode wurde ausschliesslich von
+  Tests aufgerufen. Die Dedup-Registry `$seen` ist jetzt `private`; die beiden betroffenen
+  Testklassen leeren sie über Reflection (`reset_observer_seen()`).
+- **`scope_resolver::csv_to_strings()` entfernt.** Reines Alias auf `split_list()` ohne
+  eigene Semantik; die beiden Aufrufstellen rufen `split_list()` direkt.
+
+Die drei in F5 zusätzlich genannten Alt-Dateien waren bereits vor dieser Session gelöscht;
+in 0.5.2 gibt es keine weiteren Löschungen.
+
+
 ## [0.5.1] - 2026-07-10
 
 ### Changed — Reconcile lädt Kurs und Kriterien einmal je Kurs (F2)
@@ -72,13 +117,15 @@ Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
 
 ### Added — Query-Count-Regressionstest (F4)
 
-- **`reconcile_task_test::test_reconcile_amortises_course_load_across_users()`** bucht
-  eine Kohorte von 25 Nutzern einmal über einen kursbezogenen Booker und einmal über die
-  `book()`-Fassade je Nutzer, misst beide mit `$DB->perf_get_reads()` und verlangt, dass
-  der Booker-Pfad **strikt weniger** liest. Ein wiedereingeführter Per-Nutzer-Kursladevorgang
-  lässt beide Zählungen zusammenlaufen und bricht den Test — genau der Test, der das
-  ursprüngliche Versäumnis sichtbar gemacht hätte. Der Vergleich ist relativ und damit
-  robust gegen DB-Treiber und Moodle-Version.
+- **`reconcile_task_test::test_reconcile_per_user_reads_stay_bounded()`** ruft
+  `reconcile_task::process_course()` für zwei identische Kurse unterschiedlicher
+  Kohortengrösse auf und misst mit `$DB->perf_get_reads()`. Der **marginale** Read-Aufwand
+  je zusätzlichem Nutzer — die Differenz der Zählungen geteilt durch die
+  Kohortendifferenz — hebt alle festen Kosten pro Lauf und pro Kurs auf und muss ein
+  kleiner, gedeckelter Konstantwert bleiben. Eine Regression, die die Kohorte je Nutzer
+  neu scannt oder je Kriterium ungecacht abfragt, treibt ihn hoch und bricht den Test.
+  (Ursprünglich als Strikt-weniger-Vergleich Booker-Pfad vs. Fassade formuliert; siehe
+  Korrektur unter [Unreleased].)
 
 
 ## [0.5.0] - 2026-07-10

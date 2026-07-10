@@ -262,65 +262,72 @@ final class reconcile_task_test extends \advanced_testcase {
     }
 
     /**
-     * The reconcile path loads a course and its criteria once, not once per user.
+     * The per-user cost of the reconcile booking path stays a small bounded constant.
      *
      * process_course() opens one completion_booker per course and books every user
-     * against it. Booking each user through the completion_booker::book() facade instead
-     * would reload the course record and the criteria set for each of them. This test
-     * pins that difference: booking a cohort through one per-course booker must read
-     * strictly less than booking the same cohort one facade call at a time. If a later
-     * change reintroduces a per-user course load, the two read counts converge and this
-     * fails.
+     * against it. The interesting quantity is the *marginal* read cost of one more user:
+     * running two identical courses of different cohort sizes cancels every fixed
+     * per-run and per-course cost (the course record, the criteria set, the enrolment
+     * query, config) and leaves only the per-user completion pipeline. That marginal
+     * must stay a small constant. A regression that rescans the cohort, or issues an
+     * uncached query per criterion per user, would push it up sharply and fail here.
+     *
+     * Note: this does not compare against a per-user completion_booker::book() facade
+     * loop. Empirically the two read almost identically, because Moodle already serves
+     * the course record and the criteria set from request-level caches — the win of the
+     * per-course booker is fewer completion_info constructions and criteria rebuilds, not
+     * fewer database reads. A read-count inequality between the two paths is therefore
+     * not a sound assertion; a bounded per-user marginal is.
      *
      * @return void
      */
-    public function test_reconcile_amortises_course_load_across_users(): void {
+    public function test_reconcile_per_user_reads_stay_bounded(): void {
+        $readssmall = $this->reconcile_reads_for_cohort(10);
+        $readslarge = $this->reconcile_reads_for_cohort(30);
+
+        $marginalperuser = ($readslarge - $readssmall) / 20;
+
+        $this->assertGreaterThan(0, $marginalperuser);
+        $this->assertLessThan(80, $marginalperuser);
+    }
+
+    /**
+     * Reads consumed by process_course() booking a fresh cohort of the given size.
+     *
+     * Every user has a satisfied activity criterion, so each one exercises the full
+     * booking pipeline. The whole cohort is booked in one call, which is exactly what a
+     * reconcile run does for one course.
+     *
+     * @param int $count Number of tracked, completable users to enrol.
+     * @return int Database reads consumed by the booking pass.
+     */
+    private function reconcile_reads_for_cohort(int $count): int {
         global $DB;
 
-        $count = 25;
-
-        // The path process_course() takes: one booker for the whole cohort.
-        $batched = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $batchedcm = $this->add_activity_criterion($batched);
-        $batchedusers = [];
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $cm = $this->add_activity_criterion($course);
+        $users = [];
         for ($i = 0; $i < $count; $i++) {
             $user = $this->getDataGenerator()->create_user();
-            $this->enrol_user_direct($batched, $user);
-            $this->complete_activity($batched, $batchedcm, $user, true);
-            $batchedusers[] = $user;
+            $this->enrol_user_direct($course, $user);
+            $this->complete_activity($course, $cm, $user, true);
+            $users[] = $user;
         }
 
-        // An identical course booked the pre-F2 way: one facade call per user.
-        $peruser = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $perusercm = $this->add_activity_criterion($peruser);
-        $peruserusers = [];
-        for ($i = 0; $i < $count; $i++) {
-            $user = $this->getDataGenerator()->create_user();
-            $this->enrol_user_direct($peruser, $user);
-            $this->complete_activity($peruser, $perusercm, $user, true);
-            $peruserusers[] = $user;
-        }
+        $method = new \ReflectionMethod(reconcile_task::class, 'process_course');
+        $task = new reconcile_task();
 
         $before = $DB->perf_get_reads();
-        $booker = completion_booker::for_course((int)$batched->id);
-        foreach ($batchedusers as $user) {
-            $booker->book_user((int)$user->id);
-        }
+        $result = $method->invoke($task, (int)$course->id, 0, $count + 10);
         $this->resetDebugging();
-        $batchedreads = $DB->perf_get_reads() - $before;
+        $reads = $DB->perf_get_reads() - $before;
 
-        $before = $DB->perf_get_reads();
-        foreach ($peruserusers as $user) {
-            completion_booker::book((int)$peruser->id, (int)$user->id);
+        // Cheap for the wrong reason is not cheap: the pass must have booked everyone.
+        $this->assertSame($count, $result['booked']);
+        foreach ($users as $user) {
+            $this->assertTrue($this->is_complete($course, $user));
         }
-        $this->resetDebugging();
-        $peruserreads = $DB->perf_get_reads() - $before;
 
-        $this->assertLessThan($peruserreads, $batchedreads);
-
-        // The cheaper path must also actually book everyone, or it is cheap for the wrong reason.
-        foreach ($batchedusers as $user) {
-            $this->assertTrue($this->is_complete($batched, $user));
-        }
+        return $reads;
     }
 }

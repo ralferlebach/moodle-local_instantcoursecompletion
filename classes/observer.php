@@ -37,7 +37,7 @@ class observer {
      *
      * @var array<string, bool>
      */
-    protected static $seen = [];
+    private static $seen = [];
 
     /**
      * React to an activity-completion state change.
@@ -282,14 +282,5 @@ class observer {
                 DEBUG_DEVELOPER
             );
         }
-    }
-
-    /**
-     * Reset the per-request de-duplication registry.
-     *
-     * @return void
-     */
-    public static function reset_seen(): void {
-        self::$seen = [];
     }
 }

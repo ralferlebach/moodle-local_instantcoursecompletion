@@ -279,8 +279,8 @@ class scope_resolver {
 
         return [
             self::csv_to_ints(get_config($source, $categorykey)),
-            self::csv_to_strings(get_config($source, 'includetags')),
-            self::csv_to_strings(get_config($source, 'excludetags')),
+            self::split_list(get_config($source, 'includetags')),
+            self::split_list(get_config($source, 'excludetags')),
         ];
     }
 
@@ -354,16 +354,6 @@ class scope_resolver {
             }
         }
         return $ints;
-    }
-
-    /**
-     * Parse a separated list into an array of non-empty trimmed strings.
-     *
-     * @param mixed $value Raw config value.
-     * @return string[]
-     */
-    protected static function csv_to_strings($value): array {
-        return self::split_list($value);
     }
 
     /**

@@ -70,6 +70,26 @@ queue a deduplicated ad-hoc task.
       (every 6 h, bounded recovery net)
 ```
 
+### Booking
+
+All completion booking goes through one class, `completion_booker`. It is course-scoped
+and stateful: `completion_booker::for_course($courseid)` reads the course, its
+`completion_info` and its criteria once, and the returned instance books every user of
+that course against them — `book_user()` for the whole course, `book_criterion()` for a
+single due criterion. The static `completion_booker::book($courseid, $userid)` is a thin
+facade over `for_course()->book_user()`, for callers that only ever touch one user (the
+observer's immediate booking task).
+
+A separate `course_booker` class once held the same per-course state but without the
+`(course, user)` lock, and was referenced by nothing. It was merged into
+`completion_booker` and removed in 0.5.0. **Decision:** the consolidated class keeps the
+name `completion_booker`; the per-course state and the lock live in one place, and the
+facade preserves the single-pair call site. Loading the course and criteria once per
+course rather than once per user is a structural simplification — it avoids rebuilding
+`completion_info` and the criteria set for every learner; it does not measurably reduce
+database reads, because Moodle already serves the course record and the criteria from
+request-level caches.
+
 ### Observers
 
 Registered with `'internal' => false`, so they run after the triggering transaction
@@ -138,7 +158,10 @@ Three modes:
 
 Scope membership is cached per course as a `0` or `1`, keyed by a hash of the scope
 configuration. The resolved category set and the resolved tag IDs are cached separately.
-None of the three grows with the number of courses on the site.
+The category set and the tag IDs are bounded by the number of categories and tags, not by
+the number of courses. The membership cache holds one entry per course the observers have
+actually touched, so it grows with the number of distinct courses seen — not with every
+course on the site.
 
 ---
 
