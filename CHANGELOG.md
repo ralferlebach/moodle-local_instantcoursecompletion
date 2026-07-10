@@ -26,6 +26,12 @@ versioning follows [Semantic Versioning](https://semver.org/).
   Service `completion_booker` zu nennen (nicht `course_completion_booker`), und dokumentiert,
   dass das Einmal-Laden je Kurs eine strukturelle Vereinfachung ist, keine Read-Ersparnis.
 
+- **Behat nachgezogen.** `tests/behat/settings.feature` prüfte den alten Label-Text
+  „Maximum bookings planned per run" (hide_if-Szenario für `maxtasksperrun`). Auf den in
+  F3 korrigierten Text „Maximum enrolments examined per run" umgestellt — beide
+  Fundstellen (`should see` / `should not see`). PHPUnit lief lokal grün; dieser Test
+  bricht nur im CI (Selenium/Chrome), daher erst dort sichtbar.
+
 ### Geplant — Session 005
 
 Aus dem externen Review vom 2026-07-09, gegen den Stand 0.4.10 verifiziert.

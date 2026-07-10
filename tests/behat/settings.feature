@@ -61,7 +61,7 @@ Feature: Configure the instant course completion plugin
     When I navigate to "Plugins > Local plugins > Instant course completion" in site administration
     And I set the field "Plan time-based criteria in advance" to "0"
     Then I should not see "Scheduling horizon"
-    And I should not see "Maximum bookings planned per run"
+    And I should not see "Maximum enrolments examined per run"
     When I set the field "Plan time-based criteria in advance" to "1"
     Then I should see "Scheduling horizon"
-    And I should see "Maximum bookings planned per run"
+    And I should see "Maximum enrolments examined per run"
