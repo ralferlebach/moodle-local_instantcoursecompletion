@@ -34,6 +34,7 @@ require_once(__DIR__ . '/fixtures/completion_test_trait.php');
  * Batched due-booking task tests.
  *
  * @covers \local_instantcoursecompletion\task\book_due_completion_batch_task
+ * @covers \local_instantcoursecompletion\due_candidate_repository
  * @covers \local_instantcoursecompletion\completion_booker::book_criterion
  */
 final class book_due_completion_batch_task_test extends \advanced_testcase {

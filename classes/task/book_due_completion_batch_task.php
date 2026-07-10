@@ -25,6 +25,7 @@
 namespace local_instantcoursecompletion\task;
 
 use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\due_candidate_repository;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -84,7 +85,7 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
         }
 
         $batchsize = due_scheduler::batch_size();
-        $userids = $this->due_user_ids($courseid, $criterion, $lastuserid, $batchsize);
+        $userids = due_candidate_repository::get_due_user_ids($courseid, $criterion, $lastuserid, $batchsize);
 
         $booked = 0;
         $failed = 0;
@@ -127,86 +128,5 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
                 . ' examined=' . count($userids)
                 . " booked={$booked} failed={$failed}");
         }
-    }
-
-    /**
-     * Tracked users of the course for whom this criterion has fallen due by now.
-     *
-     * @param int                  $courseid   Course ID.
-     * @param \completion_criteria $criterion  The criterion.
-     * @param int                  $lastuserid Only users with a higher ID are returned.
-     * @param int                  $limit      Maximum number of users to return.
-     * @return int[] Ordered ascending.
-     */
-    protected function due_user_ids(int $courseid, \completion_criteria $criterion, int $lastuserid, int $limit): array {
-        global $CFG, $DB;
-        require_once($CFG->libdir . '/completionlib.php');
-
-        $context = \context_course::instance($courseid);
-        [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
-        $params['courseid'] = $courseid;
-        $params['criteriaid'] = (int)$criterion->id;
-        $params['lastuserid'] = $lastuserid;
-
-        $pending = "LEFT JOIN {course_completions} cco
-                           ON cco.userid = enrolled.id AND cco.course = :courseid
-                    LEFT JOIN {course_completion_crit_compl} ccc
-                           ON ccc.userid = enrolled.id AND ccc.criteriaid = :criteriaid
-                        WHERE (cco.timecompleted IS NULL OR cco.timecompleted = 0)
-                          AND ccc.id IS NULL
-                          AND enrolled.id > :lastuserid";
-
-        if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
-            if ((int)$criterion->timeend > time()) {
-                return [];
-            }
-
-            $sql = "SELECT enrolled.id AS userid
-                      FROM ($enrolledsql) enrolled
-                      $pending
-                  ORDER BY enrolled.id ASC";
-
-            return $this->limited_user_ids($sql, $params, $limit);
-        }
-
-        $enrolperiod = (int)$criterion->enrolperiod;
-        if ($enrolperiod <= 0) {
-            return [];
-        }
-        $params['courseid2'] = $courseid;
-        $params['latest'] = time() - $enrolperiod;
-
-        // The earliest enrolment wins, and one without a start date counts from its
-        // creation time; both rules match completion_criteria_duration::cron().
-        $started = 'MIN(CASE WHEN ue.timestart > 0 THEN ue.timestart ELSE ue.timecreated END)';
-
-        $sql = "SELECT enrolled.id AS userid
-                  FROM ($enrolledsql) enrolled
-                  JOIN {user_enrolments} ue ON ue.userid = enrolled.id
-                  JOIN {enrol} e ON e.id = ue.enrolid AND e.courseid = :courseid2
-                  $pending
-              GROUP BY enrolled.id
-                HAVING $started > 0 AND $started <= :latest
-              ORDER BY enrolled.id ASC";
-
-        return $this->limited_user_ids($sql, $params, $limit);
-    }
-
-    /**
-     * Run a user-ID query with a hard row limit.
-     *
-     * get_fieldset_sql() accepts no limit arguments and silently ignores any that are
-     * passed, which is how an entire cohort once ended up in a single page. get_records_sql()
-     * keys its result by the first selected column, so the user IDs come back as the keys.
-     *
-     * @param string $sql    The query, selecting the user ID first.
-     * @param array  $params Query parameters.
-     * @param int    $limit  Maximum number of rows.
-     * @return int[] Ordered ascending.
-     */
-    protected function limited_user_ids(string $sql, array $params, int $limit): array {
-        global $DB;
-
-        return array_map('intval', array_keys($DB->get_records_sql($sql, $params, 0, $limit)));
     }
 }

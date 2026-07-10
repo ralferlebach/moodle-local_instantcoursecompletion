@@ -344,7 +344,7 @@ final class completion_booker {
             return null;
         }
 
-        $timeenrolled = due_scheduler::time_enrolled((int)$criterion->course, $userid);
+        $timeenrolled = due_candidate_repository::get_enrolment_time((int)$criterion->course, $userid);
         return $timeenrolled === null ? null : $timeenrolled + $enrolperiod;
     }
 

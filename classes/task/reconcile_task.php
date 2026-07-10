@@ -25,6 +25,7 @@
 namespace local_instantcoursecompletion\task;
 
 use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\completion_course_repository;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -70,7 +71,7 @@ class reconcile_task extends \core\task\scheduled_task {
         $budget = self::max_users_per_run();
 
         $cursor = $this->get_cursor();
-        $courseids = $this->eligible_course_ids($cursor['courseid']);
+        $courseids = completion_course_repository::get_course_ids_after($cursor['courseid'], self::MAX_COURSES_PER_RUN);
         if (empty($courseids)) {
             $this->set_cursor(0, 0);
             return;
@@ -177,33 +178,6 @@ class reconcile_task extends \core\task\scheduled_task {
             'courseid' => $courseid,
             'lastuserid' => $lastuserid,
         ]), self::COMPONENT);
-    }
-
-    /**
-     * Return the next slice of courses that have completion criteria configured.
-     *
-     * The scope filter is applied per course in PHP rather than as an IN clause, so the
-     * query never carries an unbounded parameter list.
-     *
-     * @param int $fromcourseid Lowest course ID to return; the cursor may point inside it.
-     * @return int[] Ordered course IDs, at most MAX_COURSES_PER_RUN of them.
-     */
-    protected function eligible_course_ids(int $fromcourseid): array {
-        global $DB;
-
-        // A fieldset query takes no limit; get_records_sql() keys by the first column.
-        $records = $DB->get_records_sql(
-            "SELECT DISTINCT cc.course
-               FROM {course_completion_criteria} cc
-               JOIN {course} c ON c.id = cc.course AND c.enablecompletion = 1
-              WHERE cc.course <> :siteid AND cc.course >= :fromcourseid
-           ORDER BY cc.course ASC",
-            ['siteid' => SITEID, 'fromcourseid' => $fromcourseid],
-            0,
-            self::MAX_COURSES_PER_RUN
-        );
-
-        return array_map('intval', array_keys($records));
     }
 
     /**

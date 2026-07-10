@@ -34,6 +34,7 @@ require_once(__DIR__ . '/fixtures/completion_test_trait.php');
  * Reconcile task tests.
  *
  * @covers \local_instantcoursecompletion\task\reconcile_task
+ * @covers \local_instantcoursecompletion\completion_course_repository
  */
 final class reconcile_task_test extends \advanced_testcase {
     use completion_test_trait;

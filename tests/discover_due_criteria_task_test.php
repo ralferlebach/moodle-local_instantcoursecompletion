@@ -37,6 +37,8 @@ require_once(__DIR__ . '/fixtures/completion_test_trait.php');
  * Discovery task tests.
  *
  * @covers \local_instantcoursecompletion\task\discover_due_criteria_task
+ * @covers \local_instantcoursecompletion\completion_course_repository
+ * @covers \local_instantcoursecompletion\due_candidate_repository
  * @covers \local_instantcoursecompletion\task\book_due_completion_batch_task
  */
 final class discover_due_criteria_task_test extends \advanced_testcase {

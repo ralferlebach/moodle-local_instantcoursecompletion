@@ -50,19 +50,21 @@ Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
   waren bereits vor Session 005 aus dem Repo gelöscht; offen blieben nur
   `observer::reset_seen()` und `scope_resolver::csv_to_strings()`.
 
-**Phase G — DRY und Betriebssicherheit (Ziel 0.6.0)**
+**Phase G — DRY und Betriebssicherheit (Refactor-Block in 0.5.3; G4/G5 design-gated)**
 
-- **G1** `due_candidate_repository`: die Definition eines „fälligen, noch nicht verbuchten
-  Nutzers" steht an vier Stellen.
-- **G2** `completion_course_repository::get_course_ids_after()` für Discovery und Reconcile.
-- **G3** `due_scheduler::schedule_user()` fragt je Kriterium einzeln ab.
-- **G4** Lock je `(courseid, criteriaid)` im Batch-Task: `due_user_ids()` filtert auf
-  `time() - enrolperiod`, nicht auf den Bucket; bei verzögertem Cron laden zwei fällige
-  Bucket-Tasks dieselbe Kohorte.
-- **G5** Maxima senken und ein Laufzeitbudget mit Fortsetzung ergänzen.
-- **G6** `queue_bucket()` und `queue_continuation()` zu einer privaten `queue_task()`.
+Die Reihe bleibt 0.5.x statt 0.6.x (Entscheidung Ralf). Der Refactor-Block ist erledigt;
+die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem späteren 0.5.x.
 
-**Phase H — Release-Disziplin (Ziel 0.6.x)**
+- **G1** — erledigt in 0.5.3 (siehe unten). `due_candidate_repository`.
+- **G2** — erledigt in 0.5.3 (siehe unten). `completion_course_repository`.
+- **G3** — erledigt in 0.5.3 (siehe unten). `schedule_user()` ohne Je-Kriterium-Abfragen.
+- **G4** Lock je `(courseid, criteriaid)` im Batch-Task gegen überlappende Ketten.
+  **Design-gated** (Lock-Typ, Timeout, Contention-Verhalten).
+- **G5** Maxima senken und ein Laufzeitbudget mit Fortsetzung ergänzen. **Design-gated**
+  (Budget-Sekunden, Messpunkt, Umgang mit bereits gespeicherten Werten über dem Cap).
+- **G6** — erledigt in 0.5.3 (siehe unten). Private `queue_task()`.
+
+**Phase H — Release-Disziplin (späteres 0.5.x)**
 
 - **H1** `moodle-release.yml`: `phpcpd || true` kann den Build nie brechen. Genau deshalb
   blieb `course_booker` unbemerkt.
@@ -79,6 +81,51 @@ Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
   bestehenden Cursorn. PHPUnit verifiziert die Deckelungen nicht — der
   `get_fieldset_sql()`-Fehler blieb 0.4.7 bis 0.4.10 unentdeckt.
 - Entscheidung zu `composer.json`: für den Betrieb funktionslos.
+
+
+## [0.5.3] - 2026-07-10
+
+### Changed — DRY-Refactor des Planungspfads (G1, G2, G3, G6)
+
+Reines Refactoring: kein Verhaltenswechsel. Jede verschobene Abfrage wurde vor dem
+Umhängen Zeichen für Zeichen (Whitespace- und Parameternamen-normalisiert) gegen ihr
+Original geprüft und als strukturidentisch bestätigt.
+
+- **G1 — `due_candidate_repository`.** Die Definition eines „fälligen, noch nicht
+  verbuchten Nutzers" (getrackte Einschreibung, Kurs nicht abgeschlossen, kein
+  `crit_compl`-Datensatz) lag an vier Stellen. Jetzt an einer: `has_pending_date_users()`,
+  `get_duration_candidates()` (Recordset mit `timeenrolled`), `get_due_user_ids()` und
+  `get_enrolment_time()`. Die geteilten Fragmente — die Pending-Joins und der
+  `MIN(CASE …)`-Einschreibezeitpunkt — stehen als private Konstanten genau einmal.
+  `discover_due_criteria_task::date_criterion_has_pending_users()`/`duration_user_sql()`,
+  `book_due_completion_batch_task::due_user_ids()`/`limited_user_ids()` und
+  `due_scheduler::time_enrolled()` entfallen; `completion_booker` und `due_scheduler` lesen
+  den Einschreibezeitpunkt jetzt aus dem Repository.
+- **G2 — `completion_course_repository`.** Die Kurs-Auswahl stand in Discovery und
+  Reconcile doppelt. Jetzt: `get_course_ids_after()` (Reconcile, alle Kurse mit
+  Completion-Kriterien) und `get_time_criteria_course_ids_after()` (Discovery, Zeitkriterien
+  im Horizont), beide über eine private Skelett-Abfrage. Die `eligible_course_ids()`-Methoden
+  beider Tasks entfallen.
+- **G3 — `schedule_user()` ohne Je-Kriterium-Abfragen.** Statt `criterion_recorded()` und
+  `due_time()` je Kriterium: eine Abfrage für die bereits verbuchten Kriterien
+  (`recorded_criteria_ids()`) und ein einziger, geteilter Einschreibezeitpunkt für alle
+  Dauer-Kriterien. `due_time()` und `criterion_recorded()` (beide nur hier genutzt)
+  entfallen.
+- **G6 — private `queue_task()`.** `queue_bucket()` und `queue_continuation()` bleiben als
+  öffentliche Fassaden; ihr gemeinsamer Rumpf (Task bauen, Customdata setzen, ggf.
+  `set_next_run_time`, enqueue) liegt jetzt in einer privaten `queue_task()`.
+
+### Added — Tests
+
+- **`due_candidate_repository_test`** mit den beiden Einschreibezeitpunkt-Tests (aus
+  `due_scheduler_test` hierher verschoben, da `time_enrolled()` dorthin wanderte). Die
+  Pending-User-Abfragen des Repositorys sind weiter über die Discovery- und Batch-Tests
+  abgedeckt; `@covers` in beiden ergänzt.
+
+### Hinweis
+
+- Reihe bleibt 0.5.x (nicht 0.6.x). G4/G5 (Betriebs-Items) sind design-gated und folgen in
+  einem späteren 0.5.x nach separater Entwurfsfreigabe.
 
 
 ## [0.5.2] - 2026-07-10
