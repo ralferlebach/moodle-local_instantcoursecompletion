@@ -33,6 +33,9 @@ use local_instantcoursecompletion\scope_resolver;
  * Due-criterion batch booking task.
  */
 class book_due_completion_batch_task extends \core\task\adhoc_task {
+    /** @var string Lock type serialising batch runs of the same course criterion. */
+    private const LOCK_TYPE = 'local_instantcoursecompletion_batch';
+
     /** @var int Seconds of wall-clock time one run books before handing on to a continuation. */
     protected const MAX_RUNTIME = 30;
 
@@ -55,6 +58,28 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
      */
     protected function max_runtime(): int {
         return self::MAX_RUNTIME;
+    }
+
+    /**
+     * Take the lock that serialises batch runs of one course criterion.
+     *
+     * A cron that fell behind can leave several due windows of the same criterion runnable
+     * at once, each selecting the same "due now" cohort. Separates processes, not call
+     * sites: a PostgreSQL advisory lock and a MySQL GET_LOCK are re-entrant within one
+     * database session, so the contention cannot be exercised single-process. A zero
+     * timeout is deliberate — a run that cannot take the lock is a duplicate window another
+     * run is already draining, so it steps aside; discovery or reconcile picks the criterion
+     * up again, so nothing is lost.
+     *
+     * @param int $courseid   Course ID.
+     * @param int $criteriaid Criterion ID.
+     * @return \core\lock\lock|null The lock, or null when it is held elsewhere.
+     */
+    private function acquire_lock(int $courseid, int $criteriaid): ?\core\lock\lock {
+        $factory = \core\lock\lock_config::get_lock_factory(self::LOCK_TYPE);
+        $lock = $factory->get_lock($courseid . '_' . $criteriaid, 0);
+
+        return $lock ?: null;
     }
 
     /**
@@ -98,6 +123,40 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
             // The criterion was removed while the task waited for its due time.
             return;
         }
+
+        $lock = $this->acquire_lock($courseid, $criteriaid);
+        if (!$lock) {
+            return;
+        }
+
+        try {
+            $this->book_due_users($booker, $criterion, $duebucket, $lastuserid);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Book every tracked user the criterion has fallen due for, one page at a time.
+     *
+     * Runs under the course-criterion lock taken in execute(): the course, its
+     * completion_info and its criteria are already loaded into the booker, so each user
+     * only costs the booking itself.
+     *
+     * @param completion_booker    $booker     Booker for the course.
+     * @param \completion_criteria $criterion  The due criterion.
+     * @param int                  $duebucket  Window the task belongs to.
+     * @param int                  $lastuserid User to resume after; 0 for a fresh window.
+     * @return void
+     */
+    private function book_due_users(
+        completion_booker $booker,
+        \completion_criteria $criterion,
+        int $duebucket,
+        int $lastuserid
+    ): void {
+        $courseid = (int)$booker->get_course()->id;
+        $criteriaid = (int)$criterion->id;
 
         $batchsize = due_scheduler::batch_size();
         $userids = due_candidate_repository::get_due_user_ids($courseid, $criterion, $lastuserid, $batchsize);

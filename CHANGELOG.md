@@ -66,8 +66,7 @@ die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem sp�
 - **G1** — erledigt in 0.5.3 (siehe unten). `due_candidate_repository`.
 - **G2** — erledigt in 0.5.3 (siehe unten). `completion_course_repository`.
 - **G3** — erledigt in 0.5.3 (siehe unten). `schedule_user()` ohne Je-Kriterium-Abfragen.
-- **G4** Lock je `(courseid, criteriaid)` im Batch-Task gegen überlappende Ketten.
-  **Design-gated, noch nicht freigegeben** (Lock-Typ, Timeout, Contention-Verhalten).
+- **G4** — erledigt in 0.5.5 (siehe unten). Lock je `(courseid, criteriaid)` im Batch-Task.
 - **G5** — erledigt in 0.5.4 (siehe unten). Caps gesenkt, Laufzeitbudget mit Fortsetzung.
 - **G6** — erledigt in 0.5.3 (siehe unten). Private `queue_task()`.
 
@@ -88,6 +87,34 @@ die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem sp�
   bestehenden Cursorn. PHPUnit verifiziert die Deckelungen nicht — der
   `get_fieldset_sql()`-Fehler blieb 0.4.7 bis 0.4.10 unentdeckt.
 - Entscheidung zu `composer.json`: für den Betrieb funktionslos.
+
+
+## [0.5.5] - 2026-07-10
+
+### Changed — Lock je `(courseid, criteriaid)` im Batch-Task (G4)
+
+Damit ist Phase G abgeschlossen.
+
+- **`book_due_completion_batch_task` nimmt ein Lock je `(courseid, criteriaid)`.** Ein
+  verzögerter Cron kann mehrere Fälligkeitsfenster desselben Kriteriums gleichzeitig lauffähig
+  hinterlassen; `get_due_user_ids()` filtert auf „fällig jetzt", nicht auf den Bucket, sodass
+  alle dieselbe Kohorte laden. Der `(course, user)`-Buchungslock verhinderte die
+  Doppelbuchung, nicht aber Doppelabfragen, Lock-Contention und parallele Fortsetzungsketten.
+  Neuer Lock-Typ `local_instantcoursecompletion_batch`, Key `courseid_criteriaid`, **Timeout 0**:
+  Ein Lauf, der den Lock nicht bekommt, ist ein Duplikat-Fenster, das ein anderer Lauf gerade
+  abarbeitet — er tritt zurück (`return`), und Discovery/Reconcile greift das Kriterium erneut
+  auf. Genommen nach den billigen Guards (Scope, `for_course`, `get_criterion`), **vor**
+  `get_due_user_ids()`; Freigabe im `finally`, sodass eine Fortsetzung den Lock im eigenen Lauf
+  neu holt (keine Selbstblockade).
+- **Buchungsschleife nach `book_due_users()` extrahiert**, damit die Lock-Klammer in `execute()`
+  schlank bleibt; Verhalten unverändert.
+
+### Tests
+
+- Kein neuer Test: Prozess-Locks sind single-process nicht auf Contention testbar (Vertrag im
+  Docblock). Der Glücksfall (Lock nehmen, buchen, freigeben) läuft über alle execute-basierten
+  Batch-Tests; die **Freigabe** deckt `test_continuations_book_the_whole_cohort` ab — Kopf und
+  Fortsetzungen laufen sequenziell über denselben Lock, was ohne Freigabe scheitern würde.
 
 
 ## [0.5.4] - 2026-07-10
