@@ -8,46 +8,95 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Geplant — Session 005
+
+Aus dem externen Review vom 2026-07-09, gegen den Stand 0.4.10 verifiziert.
+Vollständige Fassung mit Begründungen: `docs/sessions/session-004.md`.
+
+**Phase F — Konsolidierung des Buchungspfads (0.5.0 → 0.5.2)**
+
+Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
+
+- **F1** — erledigt in 0.5.0 (siehe unten).
+- **F2** `reconcile_task` ruft `completion_booker::book()` je Nutzer und lädt dabei
+  `get_course()` und `get_criteria()` erneut. Booker einmal je Kurs erzeugen.
+- **F3** `cachedef_scopetagids` fehlt in beiden Sprachdateien. `setting:maxtasksperrun`
+  und `setting:schedulingenabled_desc` beschreiben die Architektur vor 0.4.7 bzw. 0.4.9.
+  Die README-Aussage „None of the three grows with the number of courses" trifft auf
+  `scopecoursemembership` nicht zu.
+- **F4** Query-Count-Regressionstest über `$DB->perf_get_reads()`.
+- **F5** Toten Code entfernen: `observer::reset_seen()`, `scope_resolver::csv_to_strings()`,
+  sowie die drei bereits ersetzten Dateien `classes/task/book_due_completion_task.php`,
+  `tests/fixtures/due_criteria_test_trait.php`, `tests/generator/lib.php`.
+
+**Phase G — DRY und Betriebssicherheit (Ziel 0.6.0)**
+
+- **G1** `due_candidate_repository`: die Definition eines „fälligen, noch nicht verbuchten
+  Nutzers" steht an vier Stellen.
+- **G2** `completion_course_repository::get_course_ids_after()` für Discovery und Reconcile.
+- **G3** `due_scheduler::schedule_user()` fragt je Kriterium einzeln ab.
+- **G4** Lock je `(courseid, criteriaid)` im Batch-Task: `due_user_ids()` filtert auf
+  `time() - enrolperiod`, nicht auf den Bucket; bei verzögertem Cron laden zwei fällige
+  Bucket-Tasks dieselbe Kohorte.
+- **G5** Maxima senken und ein Laufzeitbudget mit Fortsetzung ergänzen.
+- **G6** `queue_bucket()` und `queue_continuation()` zu einer privaten `queue_task()`.
+
+**Phase H — Release-Disziplin (Ziel 0.6.x)**
+
+- **H1** `moodle-release.yml`: `phpcpd || true` kann den Build nie brechen. Genau deshalb
+  blieb `course_booker` unbemerkt.
+- **H2** Release-Job: sauberer Arbeitsbaum erzwingen, Paket aus `git archive`.
+- **H3** Workflow-Kopf nennt PHP 8.5 für Moodle 5.2, die Matrix schliesst es aus.
+- **H4** Test: jede Definition in `db/caches.php` besitzt einen `cachedef_*`-String.
+- **H5** Entscheidungs- und Historienkommentare aus dem Produktivcode entfernen
+  (fünf Fundstellen, alle aus Session 004).
+- **H6** `set_userid()` entscheiden und den Akteur in `completion_booked` testen.
+
+**Vor 1.0.0 / `MATURITY_STABLE`**
+
+- Lasttest auf echter Instanz: 10.000 Fälligkeiten zum selben Zeitpunkt, Upgrade mit
+  bestehenden Cursorn. PHPUnit verifiziert die Deckelungen nicht — der
+  `get_fieldset_sql()`-Fehler blieb 0.4.7 bis 0.4.10 unentdeckt.
+- Entscheidung zu `composer.json`: für den Betrieb funktionslos.
+
+
+## [0.5.0] - 2026-07-10
+
+### Changed — Buchungspfad konsolidiert (F1)
+
+Die Booking-API ist jetzt kursbezogen und zustandsbehaftet. Grund für den MINOR-Bump.
+
+- **`completion_booker` ist ein zustandsbehafteter, kursbezogener Service.**
+  `completion_booker::for_course($courseid)` liest Kurs, `completion_info` und die
+  Kriterienliste **einmal** und gibt eine Instanz zurück (oder `null`, wenn der Kurs
+  gelöscht wurde, der Site-Kurs ist oder keine Completion führt). Jeder Mehr-Nutzer-Aufrufer
+  öffnet eine Instanz je Kurs und bucht die Nutzer dagegen, statt Kurs und Kriterien je
+  Nutzer neu zu laden. Instanzmethoden: `book_user($userid)`, `book_criterion($criterion, $userid)`,
+  `get_course()`, `get_criterion($criteriaid)`. Der `(courseid, userid)`-Lock aus 0.4.10 bleibt
+  in beiden Buchungspfaden erhalten.
+- **`completion_booker::book($courseid, $userid)` bleibt als dünne Fassade** über
+  `for_course()->book_user()` — für Einzelpaar-Aufrufer wie den Sofort-Buchungstask des
+  Observers, bei denen es keine Kosten zu amortisieren gibt.
+- **`classes/course_booker.php` gelöscht.** Die 248-Zeilen-Klasse war von keiner Zeile
+  referenziert, dupliziert die zentrale Buchungslogik und kannte den in 0.4.10 ergänzten
+  Lock nicht. Ihre einzige eigene Idee — Kurs/Info/Kriterien einmal je Kurs zu halten — ist
+  jetzt der Normalfall von `completion_booker`.
+- **`book_due_completion_batch_task` nutzt `for_course()`.** Statt `load_course()` +
+  eigenem `new completion_info` + `get_criteria()` öffnet der Task einen Booker je Lauf und
+  bucht jede Fälligkeit über `$booker->book_criterion(...)`. `completion_booker::load_course()`
+  ist damit nicht mehr Teil der öffentlichen API (entfällt).
+- **Tests:** vier Methoden für die neue Instanz-API in `completion_booker_test`
+  (`for_course`, `get_criterion`, Instanz-`book_user`, Instanz-`book_criterion`). Die
+  bestehenden 20 Fassaden-Tests laufen unverändert, weil `book()` erhalten bleibt.
+
+### Hinweis zu gelöschten Dateien
+
+Ein Patch-ZIP kann Löschungen nicht ausdrücken. In dieser Version manuell zu entfernen:
+
+- `classes/course_booker.php`
+
+
 ## [0.4.10] - 2026-07-09
-
-### Fixed (kein Versions-Increment, iterativ in dieser Session)
-
-- **`get_fieldset_sql()` nimmt keine Limit-Parameter.** Die Signatur lautet
-  `get_fieldset_sql($sql, ?array $params = null)`; PHP schluckt überzählige Argumente
-  wortlos. An fünf Stellen wurden `$limitfrom`/`$limitnum` übergeben und ignoriert:
-  `book_due_completion_batch_task::due_user_ids()` (beide Abfragen),
-  `discover_due_criteria_task::eligible_course_ids()`,
-  `reconcile_task::eligible_course_ids()` und `criteria_index::dependent_course_ids()`.
-  Die in Phase A und C zugesicherte Deckelung war damit für diese Abfragen **nie in
-  Kraft**: ein Batch-Task las die ganze Kohorte statt `batchsize`, ein Discovery-Lauf
-  alle Kurse statt 200. Ersetzt durch `get_records_sql(..., 0, $limit)` mit
-  `array_keys()` — die erste Spalte ist in allen fünf Abfragen durch `DISTINCT` bzw.
-  `GROUP BY` eindeutig.
-- **`core_tag_tag::get_by_name_bulk()` indiziert sein Ergebnis über `$record->name`.**
-  Wir haben `'id'` als `$returnfields` übergeben, worauf der Core mit
-  `Undefined property: stdClass::$name` aussteigt. Korrigiert auf `'id, name'`. Betraf
-  jede Scope-Prüfung mit konfigurierten Tags.
-- **`\core\task\manager` cacht die Ad-hoc-Queue in prozessweiten Statics**
-  (`$miniqueue`, `$numtasks`, `$mode`), die PHPUnit zwischen Tests nicht zurücksetzt.
-  `book_due_completion_batch_task_test::run_next_batch()` ruft jetzt
-  `manager::reset_state()` und `get_next_adhoc_task(..., $checklimits = false)` — die
-  Nebenläufigkeits-Buchführung ist eine Cron-Runner-Angelegenheit und hat in einem
-  Unit-Test nichts zu suchen.
-
-### Changed
-
-- **Die beiden Reschedule-Tests behaupteten das Falsche.** Seit 0.4.9 ist `duebucket`
-  Teil des Dedup-Schlüssels, weil ein Dauer-Kriterium für jede Person zu einem anderen
-  Zeitpunkt fällig wird und jedes Fenster seinen eigenen Task braucht. Ein verschobener
-  Fälligkeitszeitpunkt legt daher einen **zusätzlichen** Task für das neue Fenster an,
-  statt einen bestehenden zu verschieben. Der im alten Fenster zurückgebliebene Task
-  ist ein No-op: er läuft vor der Fälligkeit, findet niemanden
-  (`timeend > time()` bzw. `HAVING started <= now - enrolperiod`), verbucht nichts und
-  wird vom Cron verworfen. `test_schedule_user_reschedules_a_moved_due_time` und
-  `test_rescheduling_moves_the_existing_task` prüfen jetzt genau das — samt der
-  Zusicherung, dass der veraltete Task niemanden verbucht.
-- `completion_test_trait::queued_run_times()` ergänzt.
-
 
 ### Fixed (kein Versions-Increment, iterativ in dieser Session)
 

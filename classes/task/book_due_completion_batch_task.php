@@ -72,22 +72,16 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
             return;
         }
 
-        $course = completion_booker::load_course($courseid);
-        if (!$course) {
+        $booker = completion_booker::for_course($courseid);
+        if (!$booker) {
             return;
         }
 
-        $info = new \completion_info($course);
-        if (!$info->is_enabled()) {
-            return;
-        }
-
-        $criteria = $info->get_criteria();
-        if (!isset($criteria[$criteriaid])) {
+        $criterion = $booker->get_criterion($criteriaid);
+        if (!$criterion) {
             // The criterion was removed while the task waited for its due time.
             return;
         }
-        $criterion = $criteria[$criteriaid];
 
         $batchsize = due_scheduler::batch_size();
         $userids = $this->due_user_ids($courseid, $criterion, $lastuserid, $batchsize);
@@ -98,7 +92,7 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
 
         foreach ($userids as $userid) {
             try {
-                if (completion_booker::book_criterion($info, $courseid, $criterion, $userid)) {
+                if ($booker->book_criterion($criterion, $userid)) {
                     $booked++;
                 }
                 $processeduserid = $userid;
