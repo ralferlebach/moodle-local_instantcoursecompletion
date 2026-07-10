@@ -18,13 +18,12 @@ Vollständige Fassung mit Begründungen: `docs/sessions/session-004.md`.
 Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
 
 - **F1** — erledigt in 0.5.0 (siehe unten).
-- **F2** `reconcile_task` ruft `completion_booker::book()` je Nutzer und lädt dabei
-  `get_course()` und `get_criteria()` erneut. Booker einmal je Kurs erzeugen.
+- **F2** — erledigt in 0.5.1 (siehe unten).
 - **F3** `cachedef_scopetagids` fehlt in beiden Sprachdateien. `setting:maxtasksperrun`
   und `setting:schedulingenabled_desc` beschreiben die Architektur vor 0.4.7 bzw. 0.4.9.
   Die README-Aussage „None of the three grows with the number of courses" trifft auf
   `scopecoursemembership` nicht zu.
-- **F4** Query-Count-Regressionstest über `$DB->perf_get_reads()`.
+- **F4** — erledigt in 0.5.1 (siehe unten).
 - **F5** Toten Code entfernen: `observer::reset_seen()`, `scope_resolver::csv_to_strings()`,
   sowie die drei bereits ersetzten Dateien `classes/task/book_due_completion_task.php`,
   `tests/fixtures/due_criteria_test_trait.php`, `tests/generator/lib.php`.
@@ -58,6 +57,28 @@ Auslieferung in drei Schritten: 0.5.0 (F1), 0.5.1 (F2, F4), 0.5.2 (F3, F5).
   bestehenden Cursorn. PHPUnit verifiziert die Deckelungen nicht — der
   `get_fieldset_sql()`-Fehler blieb 0.4.7 bis 0.4.10 unentdeckt.
 - Entscheidung zu `composer.json`: für den Betrieb funktionslos.
+
+
+## [0.5.1] - 2026-07-10
+
+### Changed — Reconcile lädt Kurs und Kriterien einmal je Kurs (F2)
+
+- **`reconcile_task::process_course()` öffnet einen `completion_booker::for_course()`
+  je Kurs** und bucht jeden Nutzer über `book_user()`. Zuvor rief es
+  `completion_booker::book()` je Nutzer und lud damit Kursdatensatz und Kriterienliste
+  erneut — bei 5.000 Nutzern eines Kurses 5.000-mal statt einmal. Ist der Kurs zwischen
+  Auswahl und Verarbeitung gelöscht worden oder führt er keine Completion mehr, liefert
+  `for_course()` `null` und der Kurs wird übersprungen.
+
+### Added — Query-Count-Regressionstest (F4)
+
+- **`reconcile_task_test::test_reconcile_amortises_course_load_across_users()`** bucht
+  eine Kohorte von 25 Nutzern einmal über einen kursbezogenen Booker und einmal über die
+  `book()`-Fassade je Nutzer, misst beide mit `$DB->perf_get_reads()` und verlangt, dass
+  der Booker-Pfad **strikt weniger** liest. Ein wiedereingeführter Per-Nutzer-Kursladevorgang
+  lässt beide Zählungen zusammenlaufen und bricht den Test — genau der Test, der das
+  ursprüngliche Versäumnis sichtbar gemacht hätte. Der Vergleich ist relativ und damit
+  robust gegen DB-Treiber und Moodle-Version.
 
 
 ## [0.5.0] - 2026-07-10

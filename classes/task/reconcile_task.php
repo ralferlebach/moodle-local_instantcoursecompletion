@@ -221,6 +221,21 @@ class reconcile_task extends \core\task\scheduled_task {
     protected function process_course(int $courseid, int $fromuserid, int $budget): array {
         global $DB;
 
+        // The course, its completion_info and its criteria are read once here and reused
+        // for every user of this page. Booking each user through completion_booker::book()
+        // instead would reload the course and the criteria set per user, which is the very
+        // fan-out this task is meant to drain, not create.
+        $booker = completion_booker::for_course($courseid);
+        if (!$booker) {
+            return [
+                'scanned' => 0,
+                'booked' => 0,
+                'failed' => 0,
+                'lastuserid' => $fromuserid,
+                'more' => false,
+            ];
+        }
+
         $context = \context_course::instance($courseid);
         [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
         $params['courseid'] = $courseid;
@@ -245,7 +260,7 @@ class reconcile_task extends \core\task\scheduled_task {
             $lastuserid = (int)$record->userid;
 
             try {
-                if (completion_booker::book($courseid, $lastuserid)) {
+                if ($booker->book_user($lastuserid)) {
                     $booked++;
                 }
             } catch (\dml_exception | \coding_exception $e) {

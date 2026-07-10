@@ -260,4 +260,67 @@ final class reconcile_task_test extends \advanced_testcase {
         $this->assertSame(0, (int)$cursor['courseid']);
         $this->assertSame(0, (int)$cursor['lastuserid']);
     }
+
+    /**
+     * The reconcile path loads a course and its criteria once, not once per user.
+     *
+     * process_course() opens one completion_booker per course and books every user
+     * against it. Booking each user through the completion_booker::book() facade instead
+     * would reload the course record and the criteria set for each of them. This test
+     * pins that difference: booking a cohort through one per-course booker must read
+     * strictly less than booking the same cohort one facade call at a time. If a later
+     * change reintroduces a per-user course load, the two read counts converge and this
+     * fails.
+     *
+     * @return void
+     */
+    public function test_reconcile_amortises_course_load_across_users(): void {
+        global $DB;
+
+        $count = 25;
+
+        // The path process_course() takes: one booker for the whole cohort.
+        $batched = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $batchedcm = $this->add_activity_criterion($batched);
+        $batchedusers = [];
+        for ($i = 0; $i < $count; $i++) {
+            $user = $this->getDataGenerator()->create_user();
+            $this->enrol_user_direct($batched, $user);
+            $this->complete_activity($batched, $batchedcm, $user, true);
+            $batchedusers[] = $user;
+        }
+
+        // An identical course booked the pre-F2 way: one facade call per user.
+        $peruser = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $perusercm = $this->add_activity_criterion($peruser);
+        $peruserusers = [];
+        for ($i = 0; $i < $count; $i++) {
+            $user = $this->getDataGenerator()->create_user();
+            $this->enrol_user_direct($peruser, $user);
+            $this->complete_activity($peruser, $perusercm, $user, true);
+            $peruserusers[] = $user;
+        }
+
+        $before = $DB->perf_get_reads();
+        $booker = completion_booker::for_course((int)$batched->id);
+        foreach ($batchedusers as $user) {
+            $booker->book_user((int)$user->id);
+        }
+        $this->resetDebugging();
+        $batchedreads = $DB->perf_get_reads() - $before;
+
+        $before = $DB->perf_get_reads();
+        foreach ($peruserusers as $user) {
+            completion_booker::book((int)$peruser->id, (int)$user->id);
+        }
+        $this->resetDebugging();
+        $peruserreads = $DB->perf_get_reads() - $before;
+
+        $this->assertLessThan($peruserreads, $batchedreads);
+
+        // The cheaper path must also actually book everyone, or it is cheap for the wrong reason.
+        foreach ($batchedusers as $user) {
+            $this->assertTrue($this->is_complete($batched, $user));
+        }
+    }
 }

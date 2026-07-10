@@ -25,9 +25,9 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'local_instantcoursecompletion';
-$plugin->version = 2026071000;
+$plugin->version = 2026071001;
 $plugin->requires = 2024100700;
 $plugin->supported = [405, 502];
 $plugin->maturity = MATURITY_BETA;
-$plugin->release = '0.5.0';
+$plugin->release = '0.5.1';
 $plugin->dependencies = [];
