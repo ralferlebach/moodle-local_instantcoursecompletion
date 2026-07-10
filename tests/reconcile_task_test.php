@@ -29,6 +29,7 @@ use local_instantcoursecompletion\task\reconcile_task;
 defined('MOODLE_INTERNAL') || die();
 
 require_once(__DIR__ . '/fixtures/completion_test_trait.php');
+require_once(__DIR__ . '/fixtures/reconcile_task_zero_runtime.php');
 
 /**
  * Reconcile task tests.
@@ -330,5 +331,36 @@ final class reconcile_task_test extends \advanced_testcase {
         }
 
         return $reads;
+    }
+
+    /**
+     * A run that exhausts its wall-clock budget books what it can and leaves the cursor there.
+     *
+     * @return void
+     */
+    public function test_execute_persists_the_cursor_when_it_runs_out_of_time(): void {
+        set_config('reconcile_enabled', 1, 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $cm = $this->add_activity_criterion($course);
+        $users = [];
+        for ($i = 0; $i < 3; $i++) {
+            $user = $this->getDataGenerator()->create_user();
+            $this->enrol_user_direct($course, $user);
+            $this->complete_activity($course, $cm, $user, true);
+            $users[] = $user;
+        }
+
+        (new reconcile_task_zero_runtime())->execute();
+        $this->resetDebugging();
+
+        // The first learner is booked; the run then stops and leaves the cursor on them so
+        // the next scheduled run resumes there.
+        $this->assertTrue($this->is_complete($course, $users[0]));
+        $this->assertFalse($this->is_complete($course, $users[1]));
+
+        $cursor = json_decode(get_config('local_instantcoursecompletion', 'reconcilecursor'), true);
+        $this->assertSame((int)$course->id, (int)$cursor['courseid']);
+        $this->assertSame((int)$users[0]->id, (int)$cursor['lastuserid']);
     }
 }

@@ -42,6 +42,21 @@ class reconcile_task extends \core\task\scheduled_task {
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
 
+    /** @var int Seconds of wall-clock time one run books before persisting its cursor and stopping. */
+    protected const MAX_RUNTIME = 30;
+
+    /**
+     * The wall-clock budget for one run.
+     *
+     * A seam for tests: when a run hits it, process_course() reports there is more to do,
+     * the cursor is persisted, and the next scheduled run resumes there.
+     *
+     * @return int Seconds.
+     */
+    protected function max_runtime(): int {
+        return self::MAX_RUNTIME;
+    }
+
     /**
      * Human-readable task name for the admin UI.
      *
@@ -227,6 +242,8 @@ class reconcile_task extends \core\task\scheduled_task {
         $booked = 0;
         $failed = 0;
         $lastuserid = $fromuserid;
+        $started = microtime(true);
+        $timedout = false;
 
         $recordset = $DB->get_recordset_sql($sql, $params, 0, $budget);
         foreach ($recordset as $record) {
@@ -248,16 +265,22 @@ class reconcile_task extends \core\task\scheduled_task {
                     DEBUG_DEVELOPER
                 );
             }
+
+            if (microtime(true) - $started > $this->max_runtime()) {
+                $timedout = true;
+                break;
+            }
         }
         $recordset->close();
 
-        // A full page means there may be more users behind it.
+        // A full page, or a run that ran out of time, may have users behind it; either way
+        // the cursor is left at the last user examined so the next run resumes there.
         return [
             'scanned' => $scanned,
             'booked' => $booked,
             'failed' => $failed,
             'lastuserid' => $lastuserid,
-            'more' => $scanned >= $budget,
+            'more' => $timedout || $scanned >= $budget,
         ];
     }
 }

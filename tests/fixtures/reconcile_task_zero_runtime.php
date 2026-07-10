@@ -15,19 +15,27 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Plugin version definition for local_instantcoursecompletion.
+ * Test fixture: a reconcile task with no wall-clock budget.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-defined('MOODLE_INTERNAL') || die();
+namespace local_instantcoursecompletion;
 
-$plugin->component = 'local_instantcoursecompletion';
-$plugin->version = 2026071004;
-$plugin->requires = 2024100700;
-$plugin->supported = [405, 502];
-$plugin->maturity = MATURITY_BETA;
-$plugin->release = '0.5.4';
-$plugin->dependencies = [];
+use local_instantcoursecompletion\task\reconcile_task;
+
+/**
+ * A reconcile task with no wall-clock budget, so its first booked user ends the run.
+ */
+class reconcile_task_zero_runtime extends reconcile_task {
+    /**
+     * No budget: the run stops after the first user of a course.
+     *
+     * @return int
+     */
+    protected function max_runtime(): int {
+        return 0;
+    }
+}

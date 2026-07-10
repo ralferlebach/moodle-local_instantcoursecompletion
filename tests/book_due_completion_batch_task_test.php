@@ -29,6 +29,7 @@ use local_instantcoursecompletion\task\book_due_completion_batch_task;
 defined('MOODLE_INTERNAL') || die();
 
 require_once(__DIR__ . '/fixtures/completion_test_trait.php');
+require_once(__DIR__ . '/fixtures/book_due_completion_batch_task_zero_runtime.php');
 
 /**
  * Batched due-booking task tests.
@@ -293,5 +294,33 @@ final class book_due_completion_batch_task_test extends \advanced_testcase {
 
         $this->assertCount(2, $this->queued_tasks());
         $this->assertCount(1, $this->queued_continuations());
+    }
+
+    /**
+     * A run that exhausts its wall-clock budget books what it can and hands the rest on.
+     *
+     * @return void
+     */
+    public function test_execute_queues_a_continuation_when_it_runs_out_of_time(): void {
+        [$course, $criterionid, $users] = $this->overdue_course(3);
+
+        $task = new book_due_completion_batch_task_zero_runtime();
+        $task->set_custom_data((object)[
+            'courseid' => (int)$course->id,
+            'criteriaid' => $criterionid,
+            'duebucket' => due_scheduler::due_bucket($this->overdue_time()),
+            'lastuserid' => 0,
+        ]);
+        $task->execute();
+        $this->resetDebugging();
+
+        // The first learner is booked; the run breaks after one and queues a continuation
+        // that resumes after them, so nobody is skipped and nobody is re-booked.
+        $this->assertTrue($this->is_complete($course, $users[0]));
+        $this->assertFalse($this->is_complete($course, $users[1]));
+
+        $continuations = $this->queued_continuations();
+        $this->assertCount(1, $continuations);
+        $this->assertSame((int)$users[0]->id, (int)$continuations[0]->get_custom_data()->lastuserid);
     }
 }

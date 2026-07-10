@@ -142,7 +142,7 @@ if ($hassiteconfig) {
             get_string('setting:batchsize_desc', $component),
             500,
             1,
-            50000
+            2000
         ));
         $settings->hide_if($component . '/batchsize', $component . '/schedulingenabled', 'notchecked');
 
@@ -152,7 +152,7 @@ if ($hassiteconfig) {
             get_string('setting:maxtasksperrun_desc', $component),
             5000,
             1,
-            100000
+            50000
         ));
         $settings->hide_if($component . '/maxtasksperrun', $component . '/schedulingenabled', 'notchecked');
 
@@ -169,7 +169,7 @@ if ($hassiteconfig) {
             get_string('setting:reconcilebudget_desc', $component),
             5000,
             1,
-            100000
+            10000
         ));
         $settings->hide_if($component . '/reconcilebudget', $component . '/reconcile_enabled', 'notchecked');
 

@@ -33,6 +33,9 @@ use local_instantcoursecompletion\scope_resolver;
  * Due-criterion batch booking task.
  */
 class book_due_completion_batch_task extends \core\task\adhoc_task {
+    /** @var int Seconds of wall-clock time one run books before handing on to a continuation. */
+    protected const MAX_RUNTIME = 30;
+
     /**
      * Human-readable task name for the admin UI.
      *
@@ -40,6 +43,18 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
      */
     public function get_name(): string {
         return get_string('task:bookduecompletionbatch', 'local_instantcoursecompletion');
+    }
+
+    /**
+     * The wall-clock budget for one run.
+     *
+     * A seam for tests: a run that hits it queues a continuation and stops, so that a
+     * batch of expensive aggregations never holds a cron slot open indefinitely.
+     *
+     * @return int Seconds.
+     */
+    protected function max_runtime(): int {
+        return self::MAX_RUNTIME;
     }
 
     /**
@@ -90,6 +105,8 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
         $booked = 0;
         $failed = 0;
         $processeduserid = $lastuserid;
+        $started = microtime(true);
+        $timedout = false;
 
         foreach ($userids as $userid) {
             try {
@@ -115,10 +132,17 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
                     DEBUG_DEVELOPER
                 );
             }
+
+            if (microtime(true) - $started > $this->max_runtime()) {
+                $timedout = true;
+                break;
+            }
         }
 
-        if (count($userids) >= $batchsize) {
-            // A full page means there may be more users behind it.
+        if ($timedout || count($userids) >= $batchsize) {
+            // A full page, or a run that ran out of time, may have users behind it. The
+            // continuation resumes after the last user processed, so a timed-out run does
+            // not re-book the ones it already did.
             due_scheduler::queue_continuation($courseid, $criteriaid, $duebucket, $processeduserid);
         }
 

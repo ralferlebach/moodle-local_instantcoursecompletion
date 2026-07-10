@@ -10,6 +10,14 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed (kein Versions-Increment)
 
+- **phpcs: eine Klasse je Datei.** Die zwei Timeout-Test-Helfer (`..._zero_runtime`,
+  Task-Unterklassen mit `max_runtime()` → 0) lagen am Ende ihrer Testdatei; Moodles
+  `moodle`-Standard verlangt „Each class must be in a file by itself". Nach
+  `tests/fixtures/book_due_completion_batch_task_zero_runtime.php` bzw.
+  `tests/fixtures/reconcile_task_zero_runtime.php` verschoben und per `require_once`
+  eingebunden (wie `completion_test_trait`, ohne `MOODLE_INTERNAL`-Guard, da reine
+  Klassendateien). PHPUnit war bereits grün; rein ein Lint-Fix.
+
 - **F4-Test korrigiert.** `test_reconcile_amortises_course_load_across_users()` behauptete,
   der kursbezogene Booker lese *strikt weniger* als eine `book()`-Fassade je Nutzer.
   `make check` widerlegte das empirisch: 1359 gegenüber 1327 Reads für 25 Nutzer — der
@@ -59,9 +67,8 @@ die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem sp�
 - **G2** — erledigt in 0.5.3 (siehe unten). `completion_course_repository`.
 - **G3** — erledigt in 0.5.3 (siehe unten). `schedule_user()` ohne Je-Kriterium-Abfragen.
 - **G4** Lock je `(courseid, criteriaid)` im Batch-Task gegen überlappende Ketten.
-  **Design-gated** (Lock-Typ, Timeout, Contention-Verhalten).
-- **G5** Maxima senken und ein Laufzeitbudget mit Fortsetzung ergänzen. **Design-gated**
-  (Budget-Sekunden, Messpunkt, Umgang mit bereits gespeicherten Werten über dem Cap).
+  **Design-gated, noch nicht freigegeben** (Lock-Typ, Timeout, Contention-Verhalten).
+- **G5** — erledigt in 0.5.4 (siehe unten). Caps gesenkt, Laufzeitbudget mit Fortsetzung.
 - **G6** — erledigt in 0.5.3 (siehe unten). Private `queue_task()`.
 
 **Phase H — Release-Disziplin (späteres 0.5.x)**
@@ -81,6 +88,33 @@ die beiden Betriebs-Items brauchen eine Entwurfsfreigabe und kommen in einem sp�
   bestehenden Cursorn. PHPUnit verifiziert die Deckelungen nicht — der
   `get_fieldset_sql()`-Fehler blieb 0.4.7 bis 0.4.10 unentdeckt.
 - Entscheidung zu `composer.json`: für den Betrieb funktionslos.
+
+
+## [0.5.4] - 2026-07-10
+
+### Changed — Betriebsgrenzen (G5)
+
+- **G5a — Obergrenzen gesenkt.** `batchsize` 50000 → **2000**, `maxtasksperrun` 100000 →
+  **50000**, `reconcilebudget` 100000 → **10000**. Die Defaults (500 / 5000 / 5000) bleiben.
+  Keine Upgrade-Behandlung: `bounded_int_setting::validate()` greift beim Speichern, ein
+  bereits gespeicherter Wert über dem neuen Cap bleibt bis zum nächsten Speichern aktiv —
+  bewusst so, da kein Release diese je als öffentliche Defaults ausgeliefert hat.
+- **G5b — Laufzeitbudget mit Fortsetzung.** Batch-Task und Reconcile-Task deckeln einen Lauf
+  jetzt auch nach Wall-Clock-Zeit (`MAX_RUNTIME = 30` s), nicht nur nach Zeilen: 2000
+  Aggregationen können einen Cron-Slot lange belegen. Gemessen wird `microtime(true)` je
+  Schleifendurchlauf. Der Batch-Task reiht bei Zeitüberschreitung eine `queue_continuation`
+  ab dem zuletzt verarbeiteten Nutzer ein und bricht ab — bereits gebuchte Nutzer werden
+  nicht erneut gebucht. Der Reconcile-Task persistiert den Cursor und stoppt; der nächste
+  geplante Lauf setzt fort. Discovery bleibt aussen vor (plant nur, aggregiert nicht).
+- **Testbare Naht:** `max_runtime()` ist eine `protected`-Methode, keine öffentliche
+  Test-API. Zwei Tests überschreiben sie in einer lokalen Task-Unterklasse auf `0` und
+  prüfen deterministisch, dass der Batch-Task eine Fortsetzung einreiht und der
+  Reconcile-Task den Cursor beim ersten Nutzer stehen lässt.
+
+### Hinweis
+
+- G4 (Lock je `(courseid, criteriaid)`) ist weiterhin design-gated und nicht Teil dieses
+  Patches. Folgt als 0.5.5 nach Entwurfsfreigabe.
 
 
 ## [0.5.3] - 2026-07-10
