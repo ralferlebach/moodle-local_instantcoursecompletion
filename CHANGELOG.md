@@ -6,9 +6,92 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.0.0] - 2026-07-11
 
-### Fixed (kein Versions-Increment)
+Erstes stabiles Release. `maturity` von `MATURITY_BETA` auf `MATURITY_STABLE`, `release`
+auf `1.0.0`. Dieses Release schließt die in Session 005 gefundenen Härtungsbefunde ab
+(ein extern gemeldeter P0 sowie mehrere P1/P2) und stellt die README auf die
+moodle-an-hochschulen-Vorlage um.
+
+### Behoben — P0: Abschlüsse können dauerhaft ausbleiben (`observer::$seen`)
+
+- Die statische De-Dup-Registry `observer::$seen` war als „aktueller Request" dokumentiert,
+  ist als statische Property im Cron-Prozess aber über mehrere Ad-hoc-Tasks hinweg
+  persistent. In Prerequisite-Ketten konnte ein späterer, berechtigter Trigger
+  (Voraussetzung B nach bereits gebuchter Voraussetzung A) verworfen werden; bei
+  standardmäßig deaktiviertem Reconcile bleibt der Kursabschluss dann dauerhaft aus.
+- `$seen` ersatzlos entfernt. Die Dedup identischer, noch wartender `(Kurs, Nutzer)`-Tasks
+  übernimmt weiterhin `queue_adhoc_task(…, true)`; ein bereits ausgeführter Task wird bei
+  erneutem Trigger neu eingereiht — genau das erlaubt die spätere Neubewertung. Prozess-Races
+  deckt der `(Kurs, Nutzer)`-Lock im `completion_booker` ab.
+- Regressionstest `test_trigger_requeues_after_the_earlier_task_left_the_queue()` ohne
+  Reflection: Trigger → Task aus der Queue nehmen → erneuter Trigger reiht neu ein. Der
+  bisherige Reflection-Helfer `reset_observer_seen()` entfällt in beiden Testklassen.
+
+### Geändert — Buchungstask läuft als Systemtask (P1)
+
+- `book_completion_task` erhält kein `set_userid()` mehr. Ein zwischen Trigger und Ausführung
+  gesperrter/gelöschter Nutzer hätte core sonst dazu gebracht, den Task zu verwerfen und die
+  Buchung still zu verlieren; zudem war die automatische Buchung fälschlich dem Lernenden
+  zugeschrieben. Das kehrt die H6-Entscheidung aus 0.5.6 bewusst um: der Korrektheitsvorteil
+  überwiegt den marginalen Dedup-Indexvorteil. Die Observer-Assertion prüft jetzt
+  `assertNull($task->get_userid())`.
+
+### Behoben — Batch-Fehlerpfad ohne Parallelkette (P1)
+
+- Bei `dml_exception`/`coding_exception` reihte `book_due_completion_batch_task` zusätzlich
+  zur von core ausgelösten Wiederholung eine eigene Fortsetzung ein → zwei parallele Ketten.
+  Bei systemischen Fehlern wird jetzt nur noch geworfen; core wiederholt den Task aus dessen
+  eigenen customdata. Die reguläre Fortsetzung (Timeout/volle Seite) bleibt unverändert.
+
+### Hinzugefügt — Laufzeitbudget für die Discovery (P1)
+
+- `discover_due_criteria_task` hatte nur ein Mengenbudget, hält aber den Kurs-Lock über den
+  Scan. Ergänzt um `MAX_RUNTIME = 30` s Wanduhr-Budget mit `max_runtime()`-Seam, in die
+  Kursschleife und über `schedule_course()` bis in die Kriterienschleife gefädelt, sodass
+  auch die Lock-Haltedauer begrenzt ist. Bei Budgetende wird der Keyset-Cursor persistiert;
+  der nächste Lauf setzt exakt dort fort. Neuer Test
+  `test_execute_persists_the_cursor_when_it_runs_out_of_time()` über die Fixture
+  `discover_due_criteria_task_zero_runtime`.
+
+### Hinzugefügt — sichtbare Observability unter Cron
+
+- Neuer Helfer `observer::report_failure()`: geschluckte Observer-Fehler gehen weiterhin an
+  `debugging()`, unter `CLI_SCRIPT` zusätzlich an `mtrace()`, sodass sie in den Task-Logs
+  erscheinen, wo kein Nutzer zusieht. Alle sechs Observer-Catches darüber geführt.
+
+### Geändert — kleinere Härtungen (P2)
+
+- `db/tasks.php`: `'blocking' => 0` aus beiden Task-Definitionen entfernt (ab Moodle 5.0
+  entfallen; Standard ist ohnehin nicht-blockierend).
+- `criteria_index::dependent_course_ids()`: interner Fallback-Cap `MAX_DEPENDENTS = 1000`,
+  damit ein Aufruf ohne positives Limit nie unbegrenzt materialisiert.
+
+### Geändert — README nach Vorlage
+
+- README vollständig auf die moodle-an-hochschulen-README-Vorlage umgestellt (Requirements,
+  Motivation, Installation, Usage & Settings, Capabilities, Scheduled Tasks, How this plugin
+  works, Theme support, Plugin repositories, Bug reports, Feature proposals, Moodle release
+  support, Translating, RTL, Maintainers, Copyright). Der historische `course_booker`-Abschnitt
+  entfällt. Sprachpaket-Hinweis korrigiert: das Paket liefert EN **und** DE, nicht nur EN.
+
+### Entfernt
+
+- **`classes/course_booker.php`.** Die in Session 004 als tot erkannte Alt-Booker-Klasse war
+  nie aus dem Repository entfernt worden — Patches liefern nur geänderte Dateien, die Löschung
+  muss per `git rm` erfolgen und war unterblieben. Sie wird nirgends referenziert und ruft
+  zudem die nicht mehr existierende `due_scheduler::time_enrolled()` auf (heute
+  `due_candidate_repository::get_enrolment_time()`), wäre bei Reaktivierung also defekt. Jetzt
+  gelöscht.
+
+### Nicht Teil dieses Release (operativ zu validieren)
+
+- Absolute Großlast (feste Read-Budgets, MariaDB/PostgreSQL-Vergleich, EXPLAIN) ist im
+  Unit-Test nicht darstellbar. `test_reconcile_per_user_reads_stay_bounded()` beweist
+  Linearität (marginaler Read-Aufwand je Nutzer beschränkt); die absolute Lastmessung ist der
+  Instanztest auf realer Umgebung und bleibt die letzte Freigabe vor dem Tag.
+
+### Weitere Korrekturen dieser Session (Lint/Test, kein separater Versionssprung)
 
 - **phpcs: überflüssiger `MOODLE_INTERNAL`-Guard.** `tests/caches_test.php` hatte einen
   `defined('MOODLE_INTERNAL') || die();`-Guard, den der `moodle`-Standard hier beanstandet

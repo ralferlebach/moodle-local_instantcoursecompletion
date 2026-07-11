@@ -174,11 +174,10 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
                 }
                 $processeduserid = $userid;
             } catch (\dml_exception | \coding_exception $e) {
-                // A database or programming error is not something the next user in
-                // this page fixes. The continuation resumes after the last user that
-                // was actually processed, so nobody is skipped, and the exception
-                // propagates so the task is visibly retried rather than silently short.
-                due_scheduler::queue_continuation($courseid, $criteriaid, $duebucket, $processeduserid);
+                // A database or programming error is systemic, not something the next user
+                // fixes. Core re-runs the failed task from its own custom data, so queuing a
+                // continuation here would spawn a second chain alongside that retry. The
+                // exception propagates so cron surfaces it.
                 mtrace('local_instantcoursecompletion book_due_completion_batch_task:'
                     . " aborted on course={$courseid} user={$userid}: " . $e->getMessage());
                 throw $e;
