@@ -44,7 +44,6 @@ final class notify_dependent_courses_task_test extends \advanced_testcase {
         parent::setUp();
         require_once($CFG->libdir . '/completionlib.php');
         $this->resetAfterTest(true);
-        observer::reset_seen();
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
     }

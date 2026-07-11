@@ -426,4 +426,78 @@ final class completion_booker_test extends \advanced_testcase {
         $this->assertFalse(completion_booker::book((int)$course->id, (int)$user->id));
         $this->assertFalse($this->is_complete($course, $user));
     }
+
+    /**
+     * for_course() opens a booker only for a course that can be booked at all.
+     *
+     * @return void
+     */
+    public function test_for_course_opens_only_bookable_courses(): void {
+        $this->assertNull(completion_booker::for_course(0));
+        $this->assertNull(completion_booker::for_course((int)SITEID));
+
+        $disabled = $this->getDataGenerator()->create_course(['enablecompletion' => 0]);
+        $this->assertNull(completion_booker::for_course((int)$disabled->id));
+
+        [$course] = $this->course_and_tracked_user();
+        $booker = completion_booker::for_course((int)$course->id);
+        $this->assertInstanceOf(completion_booker::class, $booker);
+        $this->assertSame((int)$course->id, (int)$booker->get_course()->id);
+    }
+
+    /**
+     * get_criterion() resolves a criterion of this course and nothing else.
+     *
+     * @return void
+     */
+    public function test_get_criterion_resolves_only_own_criteria(): void {
+        [$course] = $this->course_and_tracked_user();
+        $criteriaid = $this->add_date_criterion($course, time() - HOURSECS);
+
+        $booker = completion_booker::for_course((int)$course->id);
+        $this->assertInstanceOf(\completion_criteria::class, $booker->get_criterion($criteriaid));
+        $this->assertNull($booker->get_criterion($criteriaid + 100000));
+    }
+
+    /**
+     * book_user() on an instance books the whole course, as the static facade does.
+     *
+     * @return void
+     */
+    public function test_book_user_instance_books_the_course(): void {
+        [$course, $user] = $this->course_and_tracked_user();
+        $cm = $this->add_activity_criterion($course);
+        $this->complete_activity($course, $cm, $user, true);
+
+        $booker = completion_booker::for_course((int)$course->id);
+        $result = $booker->book_user((int)$user->id);
+        $this->resetDebugging();
+
+        $this->assertTrue($result);
+        $this->assertTrue($this->is_complete($course, $user));
+    }
+
+    /**
+     * book_criterion() books a course off a single due criterion.
+     *
+     * @return void
+     */
+    public function test_book_criterion_instance_books_from_one_criterion(): void {
+        global $DB;
+        [$course, $user] = $this->course_and_tracked_user();
+        $criteriaid = $this->add_date_criterion($course, time() - HOURSECS);
+
+        $booker = completion_booker::for_course((int)$course->id);
+        $criterion = $booker->get_criterion($criteriaid);
+        $result = $booker->book_criterion($criterion, (int)$user->id);
+        $this->resetDebugging();
+
+        $this->assertTrue($result);
+        $this->assertTrue($this->is_complete($course, $user));
+        $this->assertTrue($DB->record_exists('course_completion_crit_compl', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+            'criteriaid' => $criteriaid,
+        ]));
+    }
 }

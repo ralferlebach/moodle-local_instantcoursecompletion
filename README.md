@@ -1,52 +1,106 @@
-# Instant course completion (`local_instantcoursecompletion`)
+# moodle-local_instantcoursecompletion
 
-Moodle fires activity completion immediately, but aggregates *course* completion only
-from a scheduled cron task. Between the two, a learner who has just met the last
-criterion still sees an unfinished course — for up to a cron interval.
+[![Moodle Plugin CI](https://github.com/ralferlebach/local_instantcoursecompletion/actions/workflows/moodle-ci.yml/badge.svg?branch=main)](https://github.com/ralferlebach/local_instantcoursecompletion/actions?query=workflow%3A%22Moodle+Plugin+CI%22+branch%3Amain)
 
-This plugin closes that gap. It evaluates the criteria a course already has, earlier
-and within a configurable scope, through Moodle's own completion API.
+This local plugin marks courses complete as soon as their existing completion criteria are
+met, instead of leaving learners to wait for the scheduled completion cron task. It adds no
+completion rules of its own — it evaluates the criteria a course already has, earlier and
+within a configurable scope, through Moodle's own completion API.
 
-- **Requires:** Moodle 4.5 (2024100700) or later. No backward compatibility below 4.5.
-- **Supported:** Moodle 4.5 – 5.2, PHP 8.2 – 8.4, MariaDB and PostgreSQL.
-- **Dependencies:** none. `local_adele` is integrated optionally and detected at runtime.
-- **Licence:** GNU GPL v3 or later.
+## Requirements
 
----
+This plugin requires Moodle 4.5 (2024100700)+.
 
-## What it actually does
+It is tested on Moodle 4.5, 5.0, 5.1 and 5.2, on PHP 8.2 to 8.4, and on MariaDB and
+PostgreSQL. There is no backward compatibility below Moodle 4.5.
 
-Course completion in Moodle is a two-stage pipeline:
+## Motivation for this plugin
 
-1. A criterion is satisfied → a row appears in `course_completion_crit_compl`, and the
-   learner's `course_completions` row is flagged for reaggregation.
-2. `aggregate_completions()` applies the per-type and overall aggregation methods and,
-   if they pass, marks the course complete with the latest criterion timestamp.
+Moodle records an *activity* completion the moment it happens, but aggregates *course*
+completion only from a scheduled cron task. Between the two, a learner who has just met the
+last criterion still sees an unfinished course — for up to a cron interval.
 
-Core runs stage 2 from cron — with one exception: for a single, non-bulk activity
-completion, `completion_info::internal_set_data()` runs both stages inline before it
-fires `course_module_completion_updated`. Everything else waits for cron.
+Course completion in Moodle is a two-stage pipeline: a satisfied criterion writes a row to
+`course_completion_crit_compl` and flags the learner's `course_completions` row for
+reaggregation, and `aggregate_completions()` later applies the aggregation methods and marks
+the course complete. Core runs the second stage from cron, with one exception: for a single,
+non-bulk activity completion it runs both stages inline. Everything else waits.
 
-This plugin runs the same two stages, for the same criteria, at the moment they can
-first succeed. It never writes a `course_completions` row directly, never implements its
-own aggregation, and never evaluates completion inside a web request — the observers only
-queue a deduplicated ad-hoc task.
+This plugin runs the same two stages, for the same criteria, at the moment they can first
+succeed. It never writes a `course_completions` row directly, never implements its own
+aggregation, and never evaluates completion inside a web request — its observers only queue a
+de-duplicated ad-hoc task.
 
-### Where the latency actually is
+## Installation
 
-| Criterion type | Handled by core immediately? | Handled by this plugin |
+Install the plugin like any other plugin to folder `local/instantcoursecompletion`.
+
+See <http://docs.moodle.org/en/Installing_plugins> for details on installing Moodle plugins.
+
+## Usage & Settings
+
+After installing the plugin, it is ready to use: with the default settings it accelerates
+completion for every course on the site.
+
+To configure the plugin and its behaviour, please visit:
+*Site administration -> Plugins -> Local plugins -> Instant course completion*.
+
+There you find these settings:
+
+| Setting | Default | Notes |
 |---|---|---|
-| Activity completion (single action) | yes, inline | not needed |
-| Activity completion (bulk update) | no | on the next reconcile run |
-| Course grade | no | on `user_graded` |
-| Prerequisite course | no | on `course_completed` of the prerequisite |
-| Date reached | no | planned ahead, booked at the due time |
-| Duration since enrolment | no | planned ahead, booked at the due time |
-| Self completion, role, unenrolment | written by the user, teacher or unenrol observer | aggregated, never set on the learner's behalf |
+| Observer scope | All courses | `all`, `categories` (selected category branches with optional include/exclude course tags) or `adele` (the filters configured in `local_adele`; empty if that plugin is absent). |
+| Category branches | — | Only used in the categories scope; resolved to include sub-categories. |
+| Included / excluded course tags | — | One per line or comma separated, matched against Moodle's normalised tag names. |
+| Plan time-based criteria in advance | On | Enables the discovery task for date and duration criteria. |
+| Scheduling horizon | 7 days | Must exceed the discovery interval (hourly); the settings page warns if it does not. |
+| Users booked per batch task | 500 | 1 – 2000. |
+| Maximum records examined per run | 5000 | 1 – 50000. Enrolment records examined, not tasks planned. |
+| Enable safety-net reconcile task | Off | Bounded recovery scan; see below. |
+| Maximum users examined per reconcile run | 5000 | 1 – 10000. |
+| Enable logging | Off | Emits a `completion_booked` event per booking and a cron trace line. |
 
----
+Out-of-range values are rejected when the form is saved rather than silently clamped by the
+next cron run.
 
-## Architecture
+The plugin also provides a report at *Site administration -> Reports -> Accelerated
+completions*, which lists the 100 most recent `completion_booked` events from the standard
+logstore. It only has content while **Enable logging** is on.
+
+## Capabilities
+
+This plugin does not add any additional capabilities. The report is protected by
+`moodle/site:config`, and only users core already treats as tracked
+(`moodle/course:isincompletionreports`) are ever booked.
+
+## Scheduled Tasks
+
+This plugin introduces these additional scheduled tasks:
+
+### local_instantcoursecompletion\task\discover_due_criteria_task
+
+Plans the date and duration criteria that no event can announce, rounding each due time up
+to a shared 15-minute batch window. By default the task is enabled and runs hourly.
+
+### local_instantcoursecompletion\task\book_due_completion_batch_task
+
+Books all users a criterion has fallen due for, one page at a time. It is an ad-hoc task
+queued by the discovery task, not a scheduled one, and runs at the due window.
+
+### local_instantcoursecompletion\task\notify_dependent_courses_task
+
+Re-evaluates the courses that require a just-completed course as a prerequisite, paging
+through them so a hub course required by many programmes is not an unbounded fan-out. It is
+an ad-hoc task queued on `course_completed`.
+
+### local_instantcoursecompletion\task\reconcile_task
+
+A bounded recovery net that re-checks courses for completions the event path may have missed
+— a deleted task, a course restore, a period with scheduling switched off. By default the
+task runs every six hours but does nothing until **Enable safety-net reconcile task** is
+switched on.
+
+## How this plugin works
 
 ```text
                     ┌──────────────────────────────────────────┐
@@ -54,7 +108,7 @@ queue a deduplicated ad-hoc task.
   cm_completion ────┤  observer  ── scope? ── criteria index?  │
   enrolment events ─┤                                          │
                     └──────────────────┬───────────────────────┘
-                                       │ ad-hoc task (deduplicated, per user)
+                                       │ ad-hoc task (de-duplicated, system task)
                                        ▼
                                  completion_booker::book()
 
@@ -67,170 +121,135 @@ queue a deduplicated ad-hoc task.
                         get_user_completion() → review() → aggregate_completions()
 
   reconcile_task ───────────────────────────────────────────────────────▲
-      (every 6 h, bounded recovery net)
+      (every 6 h, bounded recovery net, off by default)
 ```
+
+### Booking
+
+All completion booking goes through one class, `completion_booker`. It is course-scoped and
+stateful: `completion_booker::for_course($courseid)` reads the course, its `completion_info`
+and its criteria once, and the returned instance books every user of that course against them
+— `book_user()` for the whole course, `book_criterion()` for a single due criterion. The
+static `completion_booker::book($courseid, $userid)` is a thin facade over
+`for_course()->book_user()` for callers that only ever touch one user. Loading the course and
+criteria once per course rather than once per user avoids rebuilding `completion_info` and the
+criteria set for every learner.
 
 ### Observers
 
-Registered with `'internal' => false`, so they run after the triggering transaction
-commits — a rolled-back activity completion leaves no queued task behind.
+Observers are registered with `'internal' => false`, so they run after the triggering
+transaction commits — a rolled-back activity completion leaves no queued task behind. Each is
+narrowed before it does any work: `course_module_completion_updated` is skipped when the
+course has only activity criteria (core already aggregated them); `user_graded` is skipped
+when the course has no grade criterion; `course_completed` queues the dependent-course
+notification; and the enrolment events plan the time-based criteria of the affected user at
+once. The lookups go through `criteria_index`, a cached map of course to criterion types.
 
-Each observer is narrowed before it does any work:
-
-- `course_module_completion_updated` is skipped when the course has **only** activity
-  criteria; core already aggregated them.
-- `user_graded` is skipped when the course has no grade criterion.
-- `course_completed` queues `notify_dependent_courses_task`, which pages through the
-  courses naming the completed one as a prerequisite. A hub course required by many
-  programmes would otherwise be an unbounded fan-out inside one request.
-- `user_enrolment_created` and `user_enrolment_updated` plan the time-based criteria of
-  the affected user at once, rather than waiting for the next discovery run.
-
-The lookups go through `criteria_index`, a cached map of course → criterion types.
+The booking task runs in the system context, not as the learner. A learner suspended between
+the trigger and the run therefore cannot cause core to discard the booking, and the automated
+completion is not attributed to them. Identical pending `(course, user)` tasks are
+de-duplicated by the queue.
 
 ### Scheduling time-based criteria
 
-Date and duration criteria cannot be announced by an event. `discover_due_criteria_task`
-runs hourly and plans them:
+Date and duration criteria cannot be announced by an event, so the discovery task plans them:
 
-- Every due time is rounded **up** to the start of a 15-minute **batch window**. All
-  criteria falling due inside one window share a single `book_due_completion_batch_task`.
-  A date criterion with 50 000 participants therefore costs one task, not 50 000.
-  Rounding up rather than down guarantees a task never runs before its criterion is
-  actually satisfied; the resulting delay is bounded by the window.
-- Only due times **within the scheduling horizon** are planned. The horizon bounds how
-  many rows the ad-hoc queue can hold; it must be longer than the interval between two
-  discovery runs.
-- Each run is capped: at most 200 courses and `maxtasksperrun` **enrolment records
-  examined**, with a composite keyset cursor `(courseid, criteriaid, lastuserid)` carried
-  into the next run. Progress is measured in records examined, never in tasks planned —
-  a record that already has a task still consumes budget and still advances the cursor.
-- The batch task books `batchsize` users, then queues a continuation carrying the last
-  user it processed. It is idempotent: a retry books only what has no
-  `course_completion_crit_compl` record yet.
-
-`reconcile_task` sits behind it as a recovery net for anything the planner missed — a
-deleted task, a course restore, a period with scheduling switched off. It uses the same
-kind of keyset cursor and is off by default.
+- Every due time is rounded **up** to the start of a 15-minute batch window; all criteria
+  falling due inside one window share a single batch task, so a date criterion with 50 000
+  participants costs one task, not 50 000. Rounding up keeps a task from running before its
+  criterion is satisfied, and the delay is bounded by the window.
+- Only due times within the scheduling horizon are planned. The horizon bounds how many rows
+  the ad-hoc queue can hold and must be longer than the interval between two discovery runs.
+- Each run is bounded by both a record budget and a wall-clock budget, with a composite keyset
+  cursor `(courseid, criteriaid, lastuserid)` carried into the next run. The batch and
+  reconcile runs are bounded the same way. A run that reaches either budget persists its
+  cursor and the next run resumes exactly where it stopped.
+- The batch task books `batchsize` users, then queues a continuation carrying the last user it
+  processed. It is idempotent: a retry books only what has no `course_completion_crit_compl`
+  record yet.
 
 ### Concurrency
 
-- `due_scheduler::course_lock()` serialises the discovery task against the enrolment
-  observers for one course. Core's `reschedule_or_queue_adhoc_task()` reads and then
-  writes, which is not atomic.
-- `completion_booker` takes a per `(course, user)` lock and re-checks completion inside
-  it, so two processes cannot both decide they were the one that completed the course
-  and both emit `completion_booked`.
+`due_scheduler::course_lock()` serialises the discovery task against the enrolment observers
+for one course, and `book_due_completion_batch_task` takes a per `(course, criterion)` lock so
+that overlapping due windows of one criterion do not drain the same cohort twice.
+`completion_booker` takes a per `(course, user)` lock and re-checks completion inside it, so
+two processes cannot both decide they completed the course and both emit `completion_booked`.
+All of these locks separate processes, not call sites: PostgreSQL advisory locks and MySQL's
+`GET_LOCK` are re-entrant inside one database session, and cron and a web request never share
+one.
 
-Both locks separate **processes**, not call sites: PostgreSQL advisory locks and MySQL's
-`GET_LOCK` are re-entrant inside one database session. Cron and a web request never share
-one, which is exactly where the race lives.
+### Compatibility logic
 
-### Scope
-
-Three modes:
-
-- **all** — every course on the site. Nothing is cached.
-- **categories** — selected category branches, resolved to include sub-categories, with
-  optional include and exclude course tags.
-- **adele** — the category and tag filters configured in `local_adele`. If that plugin is
-  absent, the scope is **empty**, not "all courses"; the settings page says so.
-
-Scope membership is cached per course as a `0` or `1`, keyed by a hash of the scope
-configuration. The resolved category set and the resolved tag IDs are cached separately.
-None of the three grows with the number of courses on the site.
-
----
-
-## Compatibility logic
-
-The plugin adds no completion *rules*, but it does carry deliberate compatibility code
-where Moodle is inconsistent with itself. These are maintained on purpose and should be
-re-checked against each supported Moodle release.
+The plugin adds no completion rules, but it carries deliberate compatibility code where Moodle
+is inconsistent with itself. These are maintained on purpose and re-checked against each
+supported release.
 
 | Area | What core does | What this plugin does |
 |---|---|---|
-| **Tracked users** | `completion_info::is_tracked_user()` and the completion reports gate on `moodle/course:isincompletionreports`. `completion_criteria_duration::cron()` reads `{user_enrolments}` with no capability filter, and `completion_criteria_date::cron()` joins any role. | Follows the **reports** semantics everywhere. A teacher whom core's criteria cron would complete is never completed by this plugin. |
-| **Duration start time** | `completion_criteria_duration::review()` reads `ue.timestart` only, and so never completes a user whose enrolment carries no start date. Its own `cron()` falls back to `ue.timecreated`. | Reproduces the `cron()` rule: earliest enrolment, `ue.timestart`, otherwise `ue.timecreated`. |
-| **Date completion time** | `completion_criteria_date::cron()` records the criterion as completed at `timeend`. | Records `timeend`, not the evaluation time, so `aggregate_completions()` derives the correct course completion timestamp. |
-| **Self, role, unenrol criteria** | Recorded by the user action, the teacher action and the unenrolment observer. Their `review()` cannot decide satisfaction from stored data. | Never marked on anyone's behalf. They are aggregated if a record already exists. |
+| Tracked users | The completion reports gate on `moodle/course:isincompletionreports`, but `completion_criteria_duration::cron()` reads `{user_enrolments}` with no capability filter. | Follows the reports semantics everywhere; a teacher whom core's criteria cron would complete is never completed here. |
+| Duration start time | `completion_criteria_duration::review()` reads `ue.timestart` only; its own `cron()` falls back to `ue.timecreated`. | Reproduces the `cron()` rule: earliest enrolment, `ue.timestart`, otherwise `ue.timecreated`. |
+| Date completion time | `completion_criteria_date::cron()` records the criterion as completed at `timeend`. | Records `timeend`, not the evaluation time, so the course completion timestamp is correct. |
+| Self, role, unenrol criteria | Recorded by the user, teacher or unenrolment observer; `review()` cannot decide them from stored data. | Never marked on anyone's behalf; aggregated only if a record already exists. |
 
----
+### Operational monitoring
 
-## Settings
+Both scheduled tasks emit a trace line whenever anything failed, regardless of the logging
+setting, and swallowed observer failures are additionally traced when running under cron. A
+`dml_exception` or `coding_exception` aborts a run and propagates so cron surfaces it; the
+cursor is left in place, so the next run retries the same slice. A single criterion
+misbehaving for a single user is counted in `failed` and does not stop the run.
 
-*Site administration → Plugins → Local plugins → Instant course completion*
+### Privacy
 
-| Setting | Default | Notes |
-|---|---|---|
-| Observer scope | All courses | See above. |
-| Category branches | — | Only used in the categories scope. |
-| Included / excluded course tags | — | One per line or comma separated. Matched against Moodle's normalised tag names. |
-| Plan time-based criteria in advance | On | Enables the discovery task. |
-| Scheduling horizon | 7 days | Must exceed the discovery interval (hourly). The settings page warns if it does not. |
-| Users booked per batch task | 500 | 1 – 50 000. |
-| Maximum records examined per run | 5000 | 1 – 100 000. Enrolment records, not tasks. |
-| Enable safety-net reconcile task | Off | Bounded recovery scan every 6 hours. |
-| Maximum users examined per reconcile run | 5000 | 1 – 100 000. |
-| Enable logging | Off | Emits a `completion_booked` event per booking, and a cron trace line. |
+The plugin owns no tables. With logging enabled it emits `completion_booked` events that the
+logging subsystem stores; the privacy provider declares that subsystem link. The records
+belong to `core_log`, which exports and deletes them.
 
-Out-of-range values are rejected when the form is saved rather than silently clamped by
-the next cron run.
+## Theme support
 
-## Report
+This plugin acts behind the scenes, therefore it should work with all Moodle themes. It is
+developed and tested on Moodle Core's Boost theme.
 
-*Site administration → Reports → Accelerated completions*
+## Plugin repositories
 
-Lists the 100 most recent `completion_booked` events from the standard logstore. It only
-has content while **Enable logging** is on.
+This plugin is not (yet) published in the Moodle plugins repository.
 
-## Operational monitoring
+The latest development version can be found on Github:
+<https://github.com/ralferlebach/local_instantcoursecompletion>
 
-Both scheduled tasks always emit a trace line when anything failed, regardless of the
-logging setting:
+## Bug and problem reports / Support requests
 
-```
-local_instantcoursecompletion reconcile_task: courses=12 scanned=4800 booked=37 failed=0
-local_instantcoursecompletion discover_due_criteria_task: courses=12 scanned=4800 planned=9 failed=0
-```
+This plugin is carefully developed and thoroughly tested, but bugs and problems can always
+appear.
 
-A `dml_exception` or `coding_exception` aborts the run and propagates, so cron reports the
-failure instead of a scan silently limping through the rest of the site. The cursor is
-left where it was, so the next run retries the same slice. A single criterion misbehaving
-for a single user is counted in `failed` and does not stop the run.
+Please report bugs and problems on Github:
+<https://github.com/ralferlebach/local_instantcoursecompletion/issues>
 
----
+## Feature proposals
 
-## Privacy
+Please issue feature proposals on Github:
+<https://github.com/ralferlebach/local_instantcoursecompletion/issues>
 
-The plugin owns no tables. With logging enabled it emits `completion_booked` events that
-the logging subsystem stores; the privacy provider declares that subsystem link. The
-records belong to `core_log`, which exports and deletes them.
+## Moodle release support
 
-## Development
+This plugin is maintained for Moodle 4.5, 5.0, 5.1 and 5.2. There may be several weeks after a
+new major release of Moodle has been published until a compatibility check is done and
+problems are fixed if necessary.
 
-```bash
-make phpunit     # PHPUnit, reinitialising the environment when needed
-make lint-php    # phpcs against the Moodle standard
-make check       # everything
-```
+## Translating this plugin
 
-CI runs PHPUnit and Behat across Moodle 4.5, 5.0, 5.1 and 5.2, on MariaDB and PostgreSQL,
-with the PHP version each branch supports.
+This Moodle plugin is shipped with an english language pack only. A german language pack is
+maintained by the author for local needs.
 
-Three things worth knowing before writing tests:
+## Right-to-left support
 
-- Tests that rely on the observers must call `preventResetByRollback()`. On PostgreSQL and
-  MSSQL, `advanced_testcase` wraps every test in a transaction it rolls back; observers
-  registered with `'internal' => false` are deferred until commit and would never run. On
-  MariaDB no transaction is opened, so the omission passes silently.
-- Enrol test users through `completion_test_trait::enrol_user_direct()`, which inserts
-  into `{enrol}` and `{user_enrolments}` directly instead of calling `enrol_user()`; the
-  resulting `user_enrolment_created` event trips other plugins' observers under PHPUnit.
-  It also assigns a role, without which nobody is a tracked user.
-- Mark activities complete with `$isbulkupdate = true`. Otherwise core aggregates the
-  course inline and the test measures core rather than this plugin.
+This plugin has not been tested with Moodle's support for right-to-left (RTL) languages.
 
-## Author
+## Maintainers
+
+The plugin is maintained by Ralf Erlebach.
+
+## Copyright
 
 Ralf Erlebach, 2026. Licensed under the GNU GPL v3 or later.

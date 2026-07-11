@@ -33,13 +33,6 @@ use local_instantcoursecompletion\task\notify_dependent_courses_task;
  */
 class observer {
     /**
-     * Course and user pairs already handled in the current request.
-     *
-     * @var array<string, bool>
-     */
-    protected static $seen = [];
-
-    /**
      * React to an activity-completion state change.
      *
      * Core marks and aggregates the activity criteria of this course for this user
@@ -98,16 +91,12 @@ class observer {
             'userid' => $userid,
             'fromcourseid' => 0,
         ]);
-        $task->set_userid($userid);
 
         try {
             \core\task\manager::queue_adhoc_task($task, true);
         } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: could not queue dependent-course notification for'
-                . " course={$courseid} user={$userid}: " . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
+            self::report_failure('could not queue dependent-course notification for'
+                . " course={$courseid} user={$userid}", $e);
         }
     }
 
@@ -146,10 +135,7 @@ class observer {
         try {
             due_scheduler::schedule_user($courseid, $userid);
         } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: due scheduling failed: ' . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
+            self::report_failure('due scheduling failed', $e);
         }
     }
 
@@ -170,10 +156,7 @@ class observer {
             }
             scope_resolver::purge_cache();
         } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: scope cache purge failed: ' . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
+            self::report_failure('scope cache purge failed', $e);
         }
     }
 
@@ -190,10 +173,7 @@ class observer {
         try {
             scope_resolver::purge_course((int)$event->courseid);
         } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: course scope purge failed: ' . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
+            self::report_failure('course scope purge failed', $e);
         }
     }
 
@@ -207,10 +187,7 @@ class observer {
         try {
             criteria_index::purge((int)$event->courseid);
         } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: criteria index purge failed: ' . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
+            self::report_failure('criteria index purge failed', $e);
         }
     }
 
@@ -256,40 +233,42 @@ class observer {
                 return;
             }
 
-            $key = $courseid . ':' . $userid;
-            if (isset(self::$seen[$key])) {
-                return;
-            }
-            self::$seen[$key] = true;
-
             $task = new book_completion_task();
             $task->set_custom_data((object)[
                 'courseid' => $courseid,
                 'userid' => $userid,
             ]);
 
-            // The user is attached so that the de-duplication lookup can use the indexed
-            // userid column; customdata carries no index and would be scanned in full.
-            // queue_adhoc_task() rejects users that cannot own a task; the catch below
-            // turns that into a skipped booking rather than a failed page load.
-            $task->set_userid($userid);
-
-            // This is an ASAP task, the only kind $checkforexisting is documented for.
+            // The task runs in the system context, not as the learner. A learner suspended
+            // between the trigger and the run must not cause core to discard the booking, and
+            // the automated booking is not attributed to them. Identical pending (course, user)
+            // tasks are de-duplicated by the queue; once a booking has run and left the queue,
+            // the same trigger queues a fresh one, which is what lets a later prerequisite
+            // re-evaluate the course.
             \core\task\manager::queue_adhoc_task($task, true);
         } catch (\Throwable $e) {
-            debugging(
-                'local_instantcoursecompletion: trigger handling failed: ' . $e->getMessage(),
-                DEBUG_DEVELOPER
-            );
+            self::report_failure('trigger handling failed for'
+                . " course={$courseid} user={$userid}", $e);
         }
     }
 
     /**
-     * Reset the per-request de-duplication registry.
+     * Record a swallowed failure.
      *
+     * The observer must never break the request that fired the event, so failures are
+     * caught. They are still surfaced: always to the developer log, and additionally to
+     * the task log when running under cron, where no user is watching and an invisible
+     * failure would otherwise be lost until the next reconcile.
+     *
+     * @param string     $context Short description of what failed.
+     * @param \Throwable $e       The caught error.
      * @return void
      */
-    public static function reset_seen(): void {
-        self::$seen = [];
+    private static function report_failure(string $context, \Throwable $e): void {
+        $message = 'local_instantcoursecompletion: ' . $context . ': ' . $e->getMessage();
+        debugging($message, DEBUG_DEVELOPER);
+        if (CLI_SCRIPT) {
+            mtrace($message);
+        }
     }
 }

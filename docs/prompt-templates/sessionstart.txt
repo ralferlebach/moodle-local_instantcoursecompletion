@@ -33,7 +33,7 @@ Der aktuelle Plugin-Stand liegt als Patch-ZIP im Anhang, einzuspielen
 in die Moodle-Installation unter local/instantcoursecompletion/.
 
 Moodle-Installation: moodle45_aliseadele
-PHP: >= 8.1 (Moodle 4.5) bzw. >= 8.2 (Moodle 5.x)
+PHP: >= 8.2 (Moodle 4.5) bzw. >= 8.3 (Moodle 5.1/5.2)
 Moodle: >= 4.5 (2024100700); getestet: 4.5, 5.0, 5.1, 5.2.
 KEINE Abwärtskompatibilität < 4.5.
 
@@ -45,33 +45,42 @@ Haupt-Dependencies:
 
 ### D) Aktueller Entwicklungsstand
 
-**Version:** 0.2.2 (2026070903) — Phase 2 vollständig implementiert und lokal grün.
+**Version:** 1.0.0 (2026071100), MATURITY_STABLE — make check lokal grün stellen, dann taggen.
 
-**Versions-Konvention (0.2.x):**
-  MINOR-Increment pro Iterations-Patch; reine Fixes kein eigenes Increment.
+**Versions-Konvention:**
+  MINOR-Increment pro Feature-Patch; reine Fixes kein eigenes Increment.
+  Ab 1.0.0 SemVer: PATCH für Fixes, MINOR für Features, MAJOR für Brüche.
 
 **Grundsatz (nicht ohne explizite Diskussion ändern):**
   Lesart A — KEINE eigene Abschlusslogik. Das Plugin wertet vorhandene Moodle-
   Completion-Kriterien nur früher und eingegrenzt aus (Observer → Scope → Kern-API).
+  Präzisierung aus Session 004: Es trägt bewusst gepflegte *Compatibility Logic*
+  an vier Stellen, an denen Moodle mit sich selbst uneins ist. Siehe README,
+  Abschnitt „Compatibility logic".
 
-**Zuletzt abgeschlossen (Session 002):**
-  - CI-Matrix auf Moodle 4.5 / 5.0 / 5.1 / 5.2 erweitert.
-  - Makefile PHPUnit-Reinit: util.php --diag (Exit 135 + 140 abgefangen).
-  - Phase 2 Schritt 1: completion_booker::book() vollständig
-      * Evaluation via $criterion->review($completion, false) — kein internes Tabellenwrite
-      * ALL/ANY-Aggregation je criteriatype + gesamt
-      * completion_completion->mark_complete() bei Erfüllung
-      * Lokale Testumgebung: local_adele-Observer-Konflikt via resetDebugging() gelöst
-  - Phase 2 Schritt 2: reconcile_task vollständig
-      * eligible_course_ids(): SCOPE_ALL → DB-Query; SCOPE_CATEGORIES/ADELE → Resolver
-      * process_course(): aktive Einschreibungen (direkte DB-Insertion in Tests)
-  - CI: Behat-init-Skript bedingt (Moodle 5.1/5.2-Kompatibilität)
-  - Alle lokalen Tests grün (19 Tests, 1 expected Skip)
+**Zuletzt abgeschlossen (Session 005 → 1.0.0):**
+  Phasen F, G, H (0.5.0–0.5.6) plus zweite Audit-Runde, jede Behauptung gegen Quelltext geprüft.
+  - P0 observer::$seen entfernt (Statik überlebte den Cron-Prozess über Ad-hoc-Tasks;
+    berechtigte Re-Trigger in Prerequisite-Ketten gingen verloren). Dedup jetzt über
+    queue_adhoc_task(…, true) + (Kurs,Nutzer)-Lock. Requeue-Regressionstest ohne Reflection.
+  - book_completion_task ohne set_userid → Systemtask (H6 bewusst umgekehrt: gesperrter Nutzer
+    hätte core den Task verwerfen lassen → stiller Buchungsverlust).
+  - Batch-Fehlerpfad: bei systemischen Fehlern nur throw, keine Parallel-Fortsetzung.
+  - Discovery-Wanduhr-Budget (MAX_RUNTIME=30, max_runtime()-Seam), Deadline bis in die
+    Kriterienschleife (begrenzt die Lock-Haltedauer); Cursor-Persistenz + zero-runtime-Fixture/Test.
+  - observer::report_failure(): debugging() immer, mtrace() unter CLI_SCRIPT.
+  - db/tasks.php ohne 'blocking'; dependent_course_ids-Cap (MAX_DEPENDENTS=1000).
+  - README auf moodle-an-hochschulen-Vorlage; course_booker-Historie raus.
+  - version.php: 1.0.0 / MATURITY_STABLE (2026071100).
 
-**Als nächstes geplant:**
-  - CI-Pipeline-Ergebnis 4.5/5.0/5.1/5.2 verifizieren.
-  - Optional: Admin-Report beschleunigter Abschlüsse (bei aktivem Logging).
-  - Optional: Release-Vorbereitung (Maturity BETA, README).
+**Als nächstes geplant (Session 006):**
+  - Absoluter Großlast-/Multi-DB-Instanztest als Freigabe-Gate hinter grünem make check
+    (feste Read-Budgets, MariaDB vs PostgreSQL, EXPLAIN; 10.000 Fälligkeiten zeitgleich,
+    Upgrade mit bestehenden Cursorn).
+  - CI H3b: workflow_call-Merge der zwei komplementären Matrizen (kanonische Matrix wählen).
+  - Optional: Rollen-Kriterium; volles Monitoring (Fehlerzähler, Admin-Warnung, Health-Check).
+  - Offen/harmlos: upgrade.php doppelte Task-Löschung (nur konsolidieren, falls 0.4.x-
+    Zwischenversionen nie verteilt wurden); eigene Planungstabelle für historische Datums-Kriterien.
 
 ---
 
@@ -83,35 +92,129 @@ Arbeitsschritt als vollumfänglich erfüllt angesehen wird, zum nächsten
 vorgesehenen Schritt in der Umsetzung über.
 
 Schlüssel-Entwurfsentscheidungen (nicht verändern ohne explizite Diskussion):
-  1. Keine eigene Abschlusslogik; nur Kern-Completion-API.
+  1. Keine eigene Abschlusslogik; nur Kern-Completion-API. Compatibility Logic
+     ausschließlich dort, wo Moodle mit sich selbst uneins ist (im README dokumentiert).
   2. Scope-Modi: all / categories (inkl. Unterkategorien + Include-/Exclude-Tags)
-     / adele (delegiert an local_adele, nur wenn installiert).
-  3. Observer schlank + wirft nie; schwere Arbeit in Adhoc-Task (async, Default)
-     oder synchron (sync, nur kleine Scopes).
-  4. Scope-Auflösung im MUC-Application-Cache; Invalidierung bei Struktur- und
-     Settings-Änderungen.
-  5. Dedup pro (courseid, userid) je Request; queue_adhoc_task($task, true).
-  6. Privacy: null_provider (kein eigener PII-Bestand).
-  7. Keine harte local_adele-Dependency; eigenständig lauffähig.
-  8. CI ohne Fremd-Plugins; Matrix 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.1–8.3.
+     / adele (delegiert an local_adele; fehlt es, ist der Scope LEER, nicht „alle").
+  3. Observer schlank, wirft nie, 'internal' => false. Schwere Arbeit ausschließlich
+     im Ad-hoc-Task — kein Synchron-Modus mehr (in 0.4.5 entfernt).
+  4. Scope-Auflösung in drei MUC-Application-Caches: scopecategoryids (O(#Kategorien)),
+     scopecoursemembership (lazy, 0/1 je Kurs), scopetagids. Invalidierung bei
+     Struktur- und Settings-Änderungen.
+  5. Zeitbasierte Kriterien: ein Batch-Task je (courseid, criteriaid, duebucket).
+     duebucket = ceil(duetime / 900) * 900 — AUFRUNDEN, damit kein Task vor seiner
+     Fälligkeit läuft. Zukunfts-Tasks über reschedule_or_queue_adhoc_task().
+  6. Nur getrackte Nutzer: moodle/course:isincompletionreports.
+  7. Privacy: metadata\provider mit core_log-Subsystem-Link (kein null_provider —
+     das completion_booked-Event wird vom Logging-Subsystem gespeichert).
+  8. Keine harte local_adele-Dependency; eigenständig lauffähig.
+  9. Keine eigene Datenbanktabelle (Vorgabe: Lösung über Systemfunktionen).
+ 10. CI ohne Fremd-Plugins; Matrix 4.5 / 5.0 / 5.1 / 5.2 × PHP 8.2–8.4 × MariaDB/PgSQL.
 
-Bekannte Stolperfallen (kumuliert):
-  - Lang-Dateien: alphabetisch, keine Kommentar-Trennzeilen.
-  - Keine Leerzeile nach öffnender { (Klasse, Methode, Block).
-  - Genau 1 Space nach Komma; keine Alignment-Paddings.
-  - Inline-Kommentare: Großbuchstabe am Anfang, Satzzeichen am Ende.
-  - Keine MOODLE_INTERNAL-Guards in classes/ oder tests/generator/.
-  - Kein TODO/@todo ohne MDL-Ref.
-  - Keine Unterstriche in lokalen Variablennamen (Moodle PHPCS).
-  - $plugin->supported = [min, max] — genau 2 Elemente (Range, keine Liste).
-  - course_completion_criteria_completion existiert in Moodle 4.5 nicht.
-    → $criterion->review($completion, false) statt direkter Tabellen-Insertions.
-  - completion_completion::mark_complete() feuert course_completed
-    → local_adele-Observer → debugging() → $this->resetDebugging() in Tests.
-  - Tests: Enrollment über direkte {enrol}/{user_enrolments}-Insertion
-    (vermeidet user_enrolment_created → local_adele-Observer-Problem).
-  - Makefile: util.php --diag für PHPUnit-Reinit-Check (Exit 0/135/140).
-  - CI Behat-init: if [ -f admin/tool/behat/cli/init.php ] für 5.x-Kompatibilität.
+---
+
+### E2) Bekannte Stolperfallen (kumuliert)
+
+**Moodle Core — Completion**
+
+  - course_completion_crit_compl IST die Tabelle. Die KLASSE heißt
+    completion_criteria_completion. Die Notiz aus Session 002/003, die Tabelle
+    existiere nicht, war eine Verwechslung von Klassen- und Tabellenname und hat
+    drei Sitzungen lang eine Eigenbau-Aggregation begründet. KORRIGIERT in 0.4.0.
+  - $criterion->review() erwartet ein completion_criteria_completion-Objekt,
+    NICHT completion_completion. completion_criteria_self::review() und
+    ..._role::review() geben $completion->is_complete() zurück — mit dem falschen
+    Objekt also den Kursabschluss statt des Kriteriums.
+  - completion_info::internal_set_data() aggregiert bei Einzelaktionen bereits inline
+    (mark_course_completions_activity_criteria + aggregate_completions), BEVOR
+    course_module_completion_updated feuert. Mit $isbulkupdate = true unterbleibt
+    beides — inklusive des Events. In Tests genau deshalb verwenden.
+  - completion_criteria_duration::review() liest ue.timestart allein und completet
+    daher nie Nutzer ohne Startdatum. Sein eigener cron() weicht auf ue.timecreated aus.
+  - completion_info::get_criteria() ist nach Kriteriums-ID indiziert.
+  - is_tracked_user() = is_enrolled(ctx, $userid, 'moodle/course:isincompletionreports', true).
+    Der Kriterien-Cron des Cores ist hier LOCKERER als seine Reports.
+
+**Moodle Core — DML**
+
+  - get_fieldset_sql($sql, $params) hat KEINE Limit-Parameter. PHP schluckt überzählige
+    Argumente wortlos. An fünf Stellen war die zugesicherte Deckelung dadurch nie in
+    Kraft. Für begrenzte Abfragen: get_records_sql($sql, $params, 0, $limit) +
+    array_keys() — die erste Spalte muss eindeutig sein (DISTINCT / GROUP BY).
+  - get_enrolled_join() setzt $now = round(time(), -2) und prüft ue.timestart < :now.
+    In Tests NIEMALS ue.timestart auf time() setzen — der Test wird 50/50 flaky.
+    is_enrolled() geht über enrol_get_enrolment_end() und rundet nicht: zwei
+    verschiedene Zeitprädikate für dieselbe Frage.
+  - core_tag_tag::get_by_name_bulk() indiziert sein Ergebnis über $record->name.
+    $returnfields muss 'name' enthalten, sonst: Undefined property: stdClass::$name.
+
+**Moodle Core — Tasks und Locks**
+
+  - queue_adhoc_task($task, $checkforexisting) ist laut Docblock ausdrücklich nur für
+    ASAP-Tasks. Für Zukunfts-Tasks: reschedule_or_queue_adhoc_task().
+    task_is_scheduled() ist protected — „neu oder verschoben?" ist nicht abfragbar.
+  - {task_adhoc} hat einen Index auf userid (Foreign Key), KEINEN auf customdata.
+    Dedup ohne gesetzte userid ist ein Full Scan pro Enqueue.
+  - queue_adhoc_task() ruft bei gesetzter userid core_user::require_active_user(...,
+    true, true) und wirft bei gelöschten, gesperrten und nologin-Konten.
+  - \core\task\manager cacht die Queue in prozessweiten Statics ($miniqueue, $numtasks,
+    $mode). PHPUnit setzt sie NICHT zurück. In Tests: manager::reset_state() vor
+    get_next_adhoc_task(), und $checklimits = false.
+  - Locks: PostgreSQL-Advisory-Locks und MySQLs GET_LOCK sind innerhalb EINER
+    Datenbanksitzung wiedereintrittsfähig. Ein Lock lässt sich single-process nicht
+    unit-testen; der Vertrag gehört in den Docblock.
+
+**PHPUnit**
+
+  - Observer mit 'internal' => false werden bei offener Transaktion gepuffert.
+    advanced_testcase::runBare() öffnet eine Transaktion NUR für postgres und mssql.
+    Tests, die auf Observer bauen, brauchen preventResetByRollback() — sonst sind sie
+    unter MariaDB grün und unter PostgreSQL rot (oder falsch grün).
+  - role_assign() feuert role_assigned; local_adele ruft dort require_phpunit_isolation()
+    → debugging(). resetDebugging() direkt danach, im Fixture-Trait, nicht im Testfall.
+  - Einschreibung in Tests über direkte {enrol}/{user_enrolments}-Insertion plus
+    role_assign() — enrol_user() feuert user_enrolment_created (local_adele-Problem).
+    OHNE Rollenzuweisung ist niemand „tracked".
+  - assertObjectHasProperty() gibt es erst ab PHPUnit 10. Lokal läuft 9.6.
+
+**Coding Standards**
+
+  - Lang-Dateien: strikt alphabetisch, keine Kommentar-Trennzeilen, EN/DE-Parität.
+  - Jede Definition in db/caches.php braucht einen cachedef_*-Sprachstring.
+  - Inline-Kommentare: Blockanfang mit Großbuchstabe, Ziffer oder „...". NIEMALS mit
+    einem Funktionsnamen oder \Namespace beginnen — der Sniff sieht nur Kleinbuchstaben.
+    Fortsetzungszeilen werden nicht geprüft.
+  - defined('MOODLE_INTERNAL') || die(); ist PFLICHT, wo die Datei Side Effects hat
+    (require_once auf Dateiebene, $observers/$tasks/$string/$plugin-Zuweisungen), und
+    VERBOTEN, wo sie nur eine Funktion oder Klasse definiert (db/upgrade.php, Traits).
+  - Mehrzeilige Funktionsaufrufe: genau ein Argument je Zeile, schließende Klammer
+    auf eigener Zeile. Zu viele Parameter sind meist die eigentliche Ursache.
+  - Keine Leerzeile nach öffnender {. Genau 1 Space nach Komma.
+  - Keine Unterstriche in lokalen Variablennamen.
+  - Keine MOODLE_INTERNAL-Guards in classes/.
+  - $plugin->supported = [min, max] — genau 2 Elemente.
+
+**Werkzeuge**
+
+  - Makefile: util.php --diag liefert 0 (ok), 135 (CONFIGERROR), 140 (nicht
+    initialisiert), 141 (veraltet). Nur 140/141 rechtfertigen einen Reinit; der
+    Rückgabewert von init.php MUSS geprüft werden, sonst läuft phpunit weiter und
+    meldet ein irreführendes 141.
+  - Der Versions-Hash (core_component::get_all_versions_hash()) wird erst am ENDE eines
+    erfolgreichen init.php geschrieben. Bricht init.php ab, wiederholt sich der Reinit
+    endlos.
+  - CI Behat: Selenium muss mit --network host laufen, sonst erreicht Chrome den
+    PHP-Webserver auf localhost:8000 nicht. Nicht-JS-Szenarien laufen im BrowserKit-
+    Treiber und maskieren den Fehler.
+  - phpcpd im Release-Workflow läuft mit `|| true` und kann den Build nicht brechen.
+
+**Meta**
+
+  - Konsistenzprüfungen müssen BEIDE Richtungen abdecken: aufgerufen-aber-undefiniert
+    UND definiert-aber-unreferenziert. Nur die erste Richtung geprüft zu haben, hat
+    course_booker.php (248 Zeilen tot) zweimal übersehen lassen.
+  - Argumentzahlen gegen bekannte Core-Signaturen prüfen (get_fieldset_sql,
+    get_records_sql, get_recordset_sql). Ein solcher Check gehört nach tools/.
 
 ---
 
@@ -121,11 +224,10 @@ Bekannte Stolperfallen (kumuliert):
 - Patch-ZIPs: patch-0.X.YY.zip; version.php Format YYYYMMDDNN.
 - Versions-Konvention: MINOR-Increment pro Feature-Patch; reine Fixes kein Increment.
 - Commit-Kurzbeschreibung + max. 5 Stichpunkte als MD-Code direkt unter Download-Link.
-- Moodle-Coding-Standards: GPL-Header, PHPDoc, Short-Array-Syntax, keine Leerzeile
-  nach {, 1 Space nach Komma, Großbuchstabe in Inline-Kommentaren, keine MOODLE_INTERNAL
-  in classes/, alphabetische Lang-Strings.
+- Moodle-Coding-Standards: siehe E2.
 - Author: Ralf Erlebach, Jahr: 2026, Lizenz: GPL v3 or later.
 - Diagnose-Skripte: nur im Chat, nie als Download.
+- Löschungen können ein Patch-ZIP nicht ausdrücken: immer explizit benennen.
 
 Bevor du beginnst:
 1. Bestätige kurz, was du aus dem Kontext-Dokument und den Dateien verstanden hast.

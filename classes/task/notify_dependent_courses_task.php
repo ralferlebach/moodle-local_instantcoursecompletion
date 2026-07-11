@@ -90,7 +90,6 @@ class notify_dependent_courses_task extends \core\task\adhoc_task {
             'userid' => $userid,
             'fromcourseid' => $fromcourseid,
         ]);
-        $task->set_userid($userid);
 
         try {
             \core\task\manager::queue_adhoc_task($task, true);

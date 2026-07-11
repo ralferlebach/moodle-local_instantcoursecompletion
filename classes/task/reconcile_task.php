@@ -25,6 +25,7 @@
 namespace local_instantcoursecompletion\task;
 
 use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\completion_course_repository;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -40,6 +41,21 @@ class reconcile_task extends \core\task\scheduled_task {
 
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
+
+    /** @var int Seconds of wall-clock time one run books before persisting its cursor and stopping. */
+    protected const MAX_RUNTIME = 30;
+
+    /**
+     * The wall-clock budget for one run.
+     *
+     * A seam for tests: when a run hits it, process_course() reports there is more to do,
+     * the cursor is persisted, and the next scheduled run resumes there.
+     *
+     * @return int Seconds.
+     */
+    protected function max_runtime(): int {
+        return self::MAX_RUNTIME;
+    }
 
     /**
      * Human-readable task name for the admin UI.
@@ -70,7 +86,7 @@ class reconcile_task extends \core\task\scheduled_task {
         $budget = self::max_users_per_run();
 
         $cursor = $this->get_cursor();
-        $courseids = $this->eligible_course_ids($cursor['courseid']);
+        $courseids = completion_course_repository::get_course_ids_after($cursor['courseid'], self::MAX_COURSES_PER_RUN);
         if (empty($courseids)) {
             $this->set_cursor(0, 0);
             return;
@@ -180,33 +196,6 @@ class reconcile_task extends \core\task\scheduled_task {
     }
 
     /**
-     * Return the next slice of courses that have completion criteria configured.
-     *
-     * The scope filter is applied per course in PHP rather than as an IN clause, so the
-     * query never carries an unbounded parameter list.
-     *
-     * @param int $fromcourseid Lowest course ID to return; the cursor may point inside it.
-     * @return int[] Ordered course IDs, at most MAX_COURSES_PER_RUN of them.
-     */
-    protected function eligible_course_ids(int $fromcourseid): array {
-        global $DB;
-
-        // A fieldset query takes no limit; get_records_sql() keys by the first column.
-        $records = $DB->get_records_sql(
-            "SELECT DISTINCT cc.course
-               FROM {course_completion_criteria} cc
-               JOIN {course} c ON c.id = cc.course AND c.enablecompletion = 1
-              WHERE cc.course <> :siteid AND cc.course >= :fromcourseid
-           ORDER BY cc.course ASC",
-            ['siteid' => SITEID, 'fromcourseid' => $fromcourseid],
-            0,
-            self::MAX_COURSES_PER_RUN
-        );
-
-        return array_map('intval', array_keys($records));
-    }
-
-    /**
      * Evaluate pending completions for one course, resuming after the given user.
      *
      * Only tracked users are considered: get_enrolled_sql() applies enrolment status,
@@ -220,6 +209,21 @@ class reconcile_task extends \core\task\scheduled_task {
      */
     protected function process_course(int $courseid, int $fromuserid, int $budget): array {
         global $DB;
+
+        // The course, its completion_info and its criteria are read once here and reused
+        // for every user of this page. Booking each user through completion_booker::book()
+        // instead would reload the course and the criteria set per user, which is the very
+        // fan-out this task is meant to drain, not create.
+        $booker = completion_booker::for_course($courseid);
+        if (!$booker) {
+            return [
+                'scanned' => 0,
+                'booked' => 0,
+                'failed' => 0,
+                'lastuserid' => $fromuserid,
+                'more' => false,
+            ];
+        }
 
         $context = \context_course::instance($courseid);
         [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
@@ -238,6 +242,8 @@ class reconcile_task extends \core\task\scheduled_task {
         $booked = 0;
         $failed = 0;
         $lastuserid = $fromuserid;
+        $started = microtime(true);
+        $timedout = false;
 
         $recordset = $DB->get_recordset_sql($sql, $params, 0, $budget);
         foreach ($recordset as $record) {
@@ -245,7 +251,7 @@ class reconcile_task extends \core\task\scheduled_task {
             $lastuserid = (int)$record->userid;
 
             try {
-                if (completion_booker::book($courseid, $lastuserid)) {
+                if ($booker->book_user($lastuserid)) {
                     $booked++;
                 }
             } catch (\dml_exception | \coding_exception $e) {
@@ -259,16 +265,22 @@ class reconcile_task extends \core\task\scheduled_task {
                     DEBUG_DEVELOPER
                 );
             }
+
+            if (microtime(true) - $started > $this->max_runtime()) {
+                $timedout = true;
+                break;
+            }
         }
         $recordset->close();
 
-        // A full page means there may be more users behind it.
+        // A full page, or a run that ran out of time, may have users behind it; either way
+        // the cursor is left at the last user examined so the next run resumes there.
         return [
             'scanned' => $scanned,
             'booked' => $booked,
             'failed' => $failed,
             'lastuserid' => $lastuserid,
-            'more' => $scanned >= $budget,
+            'more' => $timedout || $scanned >= $budget,
         ];
     }
 }

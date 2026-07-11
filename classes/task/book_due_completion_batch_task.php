@@ -25,6 +25,7 @@
 namespace local_instantcoursecompletion\task;
 
 use local_instantcoursecompletion\completion_booker;
+use local_instantcoursecompletion\due_candidate_repository;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -32,6 +33,12 @@ use local_instantcoursecompletion\scope_resolver;
  * Due-criterion batch booking task.
  */
 class book_due_completion_batch_task extends \core\task\adhoc_task {
+    /** @var string Lock type serialising batch runs of the same course criterion. */
+    private const LOCK_TYPE = 'local_instantcoursecompletion_batch';
+
+    /** @var int Seconds of wall-clock time one run books before handing on to a continuation. */
+    protected const MAX_RUNTIME = 30;
+
     /**
      * Human-readable task name for the admin UI.
      *
@@ -39,6 +46,40 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
      */
     public function get_name(): string {
         return get_string('task:bookduecompletionbatch', 'local_instantcoursecompletion');
+    }
+
+    /**
+     * The wall-clock budget for one run.
+     *
+     * A seam for tests: a run that hits it queues a continuation and stops, so that a
+     * batch of expensive aggregations never holds a cron slot open indefinitely.
+     *
+     * @return int Seconds.
+     */
+    protected function max_runtime(): int {
+        return self::MAX_RUNTIME;
+    }
+
+    /**
+     * Take the lock that serialises batch runs of one course criterion.
+     *
+     * A cron that fell behind can leave several due windows of the same criterion runnable
+     * at once, each selecting the same "due now" cohort. Separates processes, not call
+     * sites: a PostgreSQL advisory lock and a MySQL GET_LOCK are re-entrant within one
+     * database session, so the contention cannot be exercised single-process. The zero
+     * timeout means a run that cannot take the lock steps aside: it is a duplicate window
+     * another run is already draining, and discovery or reconcile picks the criterion up
+     * again, so nothing is lost.
+     *
+     * @param int $courseid   Course ID.
+     * @param int $criteriaid Criterion ID.
+     * @return \core\lock\lock|null The lock, or null when it is held elsewhere.
+     */
+    private function acquire_lock(int $courseid, int $criteriaid): ?\core\lock\lock {
+        $factory = \core\lock\lock_config::get_lock_factory(self::LOCK_TYPE);
+        $lock = $factory->get_lock($courseid . '_' . $criteriaid, 0);
+
+        return $lock ?: null;
     }
 
     /**
@@ -72,42 +113,71 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
             return;
         }
 
-        $course = completion_booker::load_course($courseid);
-        if (!$course) {
+        $booker = completion_booker::for_course($courseid);
+        if (!$booker) {
             return;
         }
 
-        $info = new \completion_info($course);
-        if (!$info->is_enabled()) {
-            return;
-        }
-
-        $criteria = $info->get_criteria();
-        if (!isset($criteria[$criteriaid])) {
+        $criterion = $booker->get_criterion($criteriaid);
+        if (!$criterion) {
             // The criterion was removed while the task waited for its due time.
             return;
         }
-        $criterion = $criteria[$criteriaid];
+
+        $lock = $this->acquire_lock($courseid, $criteriaid);
+        if (!$lock) {
+            return;
+        }
+
+        try {
+            $this->book_due_users($booker, $criterion, $duebucket, $lastuserid);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Book every tracked user the criterion has fallen due for, one page at a time.
+     *
+     * Runs under the course-criterion lock taken in execute(): the course, its
+     * completion_info and its criteria are already loaded into the booker, so each user
+     * only costs the booking itself.
+     *
+     * @param completion_booker    $booker     Booker for the course.
+     * @param \completion_criteria $criterion  The due criterion.
+     * @param int                  $duebucket  Window the task belongs to.
+     * @param int                  $lastuserid User to resume after; 0 for a fresh window.
+     * @return void
+     */
+    private function book_due_users(
+        completion_booker $booker,
+        \completion_criteria $criterion,
+        int $duebucket,
+        int $lastuserid
+    ): void {
+        $courseid = (int)$booker->get_course()->id;
+        $criteriaid = (int)$criterion->id;
 
         $batchsize = due_scheduler::batch_size();
-        $userids = $this->due_user_ids($courseid, $criterion, $lastuserid, $batchsize);
+        $userids = due_candidate_repository::get_due_user_ids($courseid, $criterion, $lastuserid, $batchsize);
 
         $booked = 0;
         $failed = 0;
         $processeduserid = $lastuserid;
+        $started = microtime(true);
+        $timedout = false;
 
         foreach ($userids as $userid) {
             try {
-                if (completion_booker::book_criterion($info, $courseid, $criterion, $userid)) {
+                if ($booker->book_criterion($criterion, $userid)) {
                     $booked++;
                 }
                 $processeduserid = $userid;
             } catch (\dml_exception | \coding_exception $e) {
-                // A database or programming error is not something the next user in
-                // this page fixes. The continuation resumes after the last user that
-                // was actually processed, so nobody is skipped, and the exception
-                // propagates so the task is visibly retried rather than silently short.
-                due_scheduler::queue_continuation($courseid, $criteriaid, $duebucket, $processeduserid);
+                // A database or programming error is systemic, not something the next user
+                // fixes. Core re-runs the failed task from its own custom data, so queuing a
+                // continuation here would spawn a second chain alongside that retry. The
+                // exception propagates so cron surfaces it.
                 mtrace('local_instantcoursecompletion book_due_completion_batch_task:'
                     . " aborted on course={$courseid} user={$userid}: " . $e->getMessage());
                 throw $e;
@@ -120,10 +190,17 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
                     DEBUG_DEVELOPER
                 );
             }
+
+            if (microtime(true) - $started > $this->max_runtime()) {
+                $timedout = true;
+                break;
+            }
         }
 
-        if (count($userids) >= $batchsize) {
-            // A full page means there may be more users behind it.
+        if ($timedout || count($userids) >= $batchsize) {
+            // A full page, or a run that ran out of time, may have users behind it. The
+            // continuation resumes after the last user processed, so a timed-out run does
+            // not re-book the ones it already did.
             due_scheduler::queue_continuation($courseid, $criteriaid, $duebucket, $processeduserid);
         }
 
@@ -133,86 +210,5 @@ class book_due_completion_batch_task extends \core\task\adhoc_task {
                 . ' examined=' . count($userids)
                 . " booked={$booked} failed={$failed}");
         }
-    }
-
-    /**
-     * Tracked users of the course for whom this criterion has fallen due by now.
-     *
-     * @param int                  $courseid   Course ID.
-     * @param \completion_criteria $criterion  The criterion.
-     * @param int                  $lastuserid Only users with a higher ID are returned.
-     * @param int                  $limit      Maximum number of users to return.
-     * @return int[] Ordered ascending.
-     */
-    protected function due_user_ids(int $courseid, \completion_criteria $criterion, int $lastuserid, int $limit): array {
-        global $CFG, $DB;
-        require_once($CFG->libdir . '/completionlib.php');
-
-        $context = \context_course::instance($courseid);
-        [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
-        $params['courseid'] = $courseid;
-        $params['criteriaid'] = (int)$criterion->id;
-        $params['lastuserid'] = $lastuserid;
-
-        $pending = "LEFT JOIN {course_completions} cco
-                           ON cco.userid = enrolled.id AND cco.course = :courseid
-                    LEFT JOIN {course_completion_crit_compl} ccc
-                           ON ccc.userid = enrolled.id AND ccc.criteriaid = :criteriaid
-                        WHERE (cco.timecompleted IS NULL OR cco.timecompleted = 0)
-                          AND ccc.id IS NULL
-                          AND enrolled.id > :lastuserid";
-
-        if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
-            if ((int)$criterion->timeend > time()) {
-                return [];
-            }
-
-            $sql = "SELECT enrolled.id AS userid
-                      FROM ($enrolledsql) enrolled
-                      $pending
-                  ORDER BY enrolled.id ASC";
-
-            return $this->limited_user_ids($sql, $params, $limit);
-        }
-
-        $enrolperiod = (int)$criterion->enrolperiod;
-        if ($enrolperiod <= 0) {
-            return [];
-        }
-        $params['courseid2'] = $courseid;
-        $params['latest'] = time() - $enrolperiod;
-
-        // The earliest enrolment wins, and one without a start date counts from its
-        // creation time; both rules match completion_criteria_duration::cron().
-        $started = 'MIN(CASE WHEN ue.timestart > 0 THEN ue.timestart ELSE ue.timecreated END)';
-
-        $sql = "SELECT enrolled.id AS userid
-                  FROM ($enrolledsql) enrolled
-                  JOIN {user_enrolments} ue ON ue.userid = enrolled.id
-                  JOIN {enrol} e ON e.id = ue.enrolid AND e.courseid = :courseid2
-                  $pending
-              GROUP BY enrolled.id
-                HAVING $started > 0 AND $started <= :latest
-              ORDER BY enrolled.id ASC";
-
-        return $this->limited_user_ids($sql, $params, $limit);
-    }
-
-    /**
-     * Run a user-ID query with a hard row limit.
-     *
-     * get_fieldset_sql() accepts no limit arguments and silently ignores any that are
-     * passed, which is how an entire cohort once ended up in a single page. get_records_sql()
-     * keys its result by the first selected column, so the user IDs come back as the keys.
-     *
-     * @param string $sql    The query, selecting the user ID first.
-     * @param array  $params Query parameters.
-     * @param int    $limit  Maximum number of rows.
-     * @return int[] Ordered ascending.
-     */
-    protected function limited_user_ids(string $sql, array $params, int $limit): array {
-        global $DB;
-
-        return array_map('intval', array_keys($DB->get_records_sql($sql, $params, 0, $limit)));
     }
 }

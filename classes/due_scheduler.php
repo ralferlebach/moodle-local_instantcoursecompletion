@@ -36,9 +36,8 @@ class due_scheduler {
     /**
      * The granularity due times are rounded up to.
      *
-     * Every criterion falling due inside one window shares a single batch task. The
-     * window replaces the per-user jitter of earlier versions and delays a booking by
-     * no more than the jitter already did.
+     * Every criterion falling due inside one window shares a single batch task, and a
+     * booking is delayed by at most the width of one window.
      *
      * @var int
      */
@@ -192,17 +191,39 @@ class due_scheduler {
         $planned = 0;
 
         try {
-            foreach (self::time_criteria($courseid) as $criterion) {
-                if (self::criterion_recorded((int)$criterion->id, $userid)) {
+            $criteria = self::time_criteria($courseid);
+
+            // One query for the criteria the user is already booked for, and the enrolment
+            // time computed once and shared by every duration criterion, rather than a pair
+            // of queries per criterion.
+            $recorded = self::recorded_criteria_ids(array_keys($criteria), $userid);
+            $timeenrolled = false;
+
+            foreach ($criteria as $criterion) {
+                $criteriaid = (int)$criterion->id;
+                if (isset($recorded[$criteriaid])) {
                     continue;
                 }
 
-                $duetime = self::due_time($criterion, $userid);
+                if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
+                    $timeend = (int)$criterion->timeend;
+                    $duetime = $timeend > 0 ? $timeend : null;
+                } else {
+                    $enrolperiod = (int)$criterion->enrolperiod;
+                    if ($enrolperiod <= 0) {
+                        continue;
+                    }
+                    if ($timeenrolled === false) {
+                        $timeenrolled = due_candidate_repository::get_enrolment_time($courseid, $userid);
+                    }
+                    $duetime = ($timeenrolled === null) ? null : $timeenrolled + $enrolperiod;
+                }
+
                 if ($duetime === null || $duetime > $horizon) {
                     continue;
                 }
 
-                if (self::queue_bucket($courseid, (int)$criterion->id, self::due_bucket($duetime))) {
+                if (self::queue_bucket($courseid, $criteriaid, self::due_bucket($duetime))) {
                     $planned++;
                 }
             }
@@ -236,69 +257,33 @@ class due_scheduler {
     }
 
     /**
-     * When a time-based criterion falls due for a user.
+     * The criteria among the given set the user already has a completion record for.
      *
-     * @param \stdClass $criterion Criterion record.
-     * @param int       $userid    User ID.
-     * @return int|null Timestamp, or null when the criterion can never fall due.
+     * One query replaces a per-criterion existence check. The result is a set keyed by
+     * criterion ID, so membership is an isset() away.
+     *
+     * @param int[] $criteriaids Criterion IDs to test.
+     * @param int   $userid      User ID.
+     * @return array Keys are the recorded criterion IDs.
      */
-    public static function due_time(\stdClass $criterion, int $userid): ?int {
-        global $CFG;
-        require_once($CFG->libdir . '/completionlib.php');
-
-        if ((int)$criterion->criteriatype === COMPLETION_CRITERIA_TYPE_DATE) {
-            $timeend = (int)$criterion->timeend;
-            return $timeend > 0 ? $timeend : null;
-        }
-
-        $enrolperiod = (int)$criterion->enrolperiod;
-        if ($enrolperiod <= 0) {
-            return null;
-        }
-
-        $timeenrolled = self::time_enrolled((int)$criterion->course, $userid);
-        return $timeenrolled === null ? null : $timeenrolled + $enrolperiod;
-    }
-
-    /**
-     * The moment a user's enrolment in a course starts counting.
-     *
-     * The earliest enrolment wins, and an enrolment without a start date counts from its
-     * creation time. Both rules match completion_criteria_duration::cron(), whose review()
-     * counterpart reads ue.timestart alone and therefore never completes such users.
-     *
-     * @param int $courseid Course ID.
-     * @param int $userid   User ID.
-     * @return int|null Timestamp, or null when the user has no usable enrolment.
-     */
-    public static function time_enrolled(int $courseid, int $userid): ?int {
+    protected static function recorded_criteria_ids(array $criteriaids, int $userid): array {
         global $DB;
 
-        $timeenrolled = $DB->get_field_sql(
-            "SELECT MIN(CASE WHEN ue.timestart > 0 THEN ue.timestart ELSE ue.timecreated END)
-               FROM {user_enrolments} ue
-               JOIN {enrol} e ON e.id = ue.enrolid
-              WHERE e.courseid = :courseid AND ue.userid = :userid",
-            ['courseid' => $courseid, 'userid' => $userid]
+        if (empty($criteriaids)) {
+            return [];
+        }
+
+        [$insql, $params] = $DB->get_in_or_equal($criteriaids, SQL_PARAMS_NAMED, 'cid');
+        $params['userid'] = $userid;
+
+        $records = $DB->get_records_sql(
+            "SELECT criteriaid
+               FROM {course_completion_crit_compl}
+              WHERE criteriaid $insql AND userid = :userid",
+            $params
         );
 
-        return empty($timeenrolled) ? null : (int)$timeenrolled;
-    }
-
-    /**
-     * Whether the user already has a completion record for the criterion.
-     *
-     * @param int $criteriaid Criterion ID.
-     * @param int $userid     User ID.
-     * @return bool
-     */
-    protected static function criterion_recorded(int $criteriaid, int $userid): bool {
-        global $DB;
-
-        return $DB->record_exists('course_completion_crit_compl', [
-            'criteriaid' => $criteriaid,
-            'userid' => $userid,
-        ]);
+        return array_flip(array_map('intval', array_keys($records)));
     }
 
     /**
@@ -319,16 +304,7 @@ class due_scheduler {
      * @return bool Whether the task was planned.
      */
     public static function queue_bucket(int $courseid, int $criteriaid, int $duebucket): bool {
-        $task = new book_due_completion_batch_task();
-        $task->set_custom_data((object)[
-            'courseid' => $courseid,
-            'criteriaid' => $criteriaid,
-            'duebucket' => $duebucket,
-            'lastuserid' => 0,
-        ]);
-        $task->set_next_run_time($duebucket);
-
-        return self::enqueue($task, $courseid);
+        return self::queue_task($courseid, $criteriaid, $duebucket, 0, $duebucket);
     }
 
     /**
@@ -341,6 +317,29 @@ class due_scheduler {
      * @return bool Whether the task was planned.
      */
     public static function queue_continuation(int $courseid, int $criteriaid, int $duebucket, int $lastuserid): bool {
+        return self::queue_task($courseid, $criteriaid, $duebucket, $lastuserid, null);
+    }
+
+    /**
+     * Build and enqueue a batch task.
+     *
+     * A first task for a window carries lastuserid 0 and runs at the window; a continuation
+     * carries the last user booked and runs as soon as possible (a null run time).
+     *
+     * @param int      $courseid    Course ID.
+     * @param int      $criteriaid  Criterion being booked.
+     * @param int      $duebucket   Window the task belongs to.
+     * @param int      $lastuserid  User to resume after; 0 for a fresh window.
+     * @param int|null $nextruntime Run time to set, or null to leave it as soon as possible.
+     * @return bool Whether the task was planned.
+     */
+    private static function queue_task(
+        int $courseid,
+        int $criteriaid,
+        int $duebucket,
+        int $lastuserid,
+        ?int $nextruntime
+    ): bool {
         $task = new book_due_completion_batch_task();
         $task->set_custom_data((object)[
             'courseid' => $courseid,
@@ -348,6 +347,9 @@ class due_scheduler {
             'duebucket' => $duebucket,
             'lastuserid' => $lastuserid,
         ]);
+        if ($nextruntime !== null) {
+            $task->set_next_run_time($nextruntime);
+        }
 
         return self::enqueue($task, $courseid);
     }

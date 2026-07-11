@@ -325,30 +325,4 @@ final class due_scheduler_test extends \advanced_testcase {
         $this->assertInstanceOf(\core\lock\lock::class, $lock);
         $this->assertTrue($lock->release());
     }
-
-    /**
-     * Without an enrolment start date, the enrolment creation time is used.
-     *
-     * @return void
-     */
-    public function test_time_enrolled_falls_back_to_timecreated(): void {
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-        $timecreated = time() - DAYSECS * 5;
-        $this->enrol_user_direct($course, $user, 0, $timecreated);
-
-        $this->assertSame($timecreated, due_scheduler::time_enrolled((int)$course->id, (int)$user->id));
-    }
-
-    /**
-     * A user with no enrolment at all has no enrolment time.
-     *
-     * @return void
-     */
-    public function test_time_enrolled_without_enrolment(): void {
-        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
-        $user = $this->getDataGenerator()->create_user();
-
-        $this->assertNull(due_scheduler::time_enrolled((int)$course->id, (int)$user->id));
-    }
 }

@@ -15,33 +15,27 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Scheduled task definitions for local_instantcoursecompletion.
- *
- * The discovery task must run more often than the scheduling horizon is long, or due
- * times pass unplanned. The reconcile task is the recovery net behind it.
+ * Test fixture: a batch task with no wall-clock budget.
  *
  * @package    local_instantcoursecompletion
  * @copyright  2026 Ralf Erlebach
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-defined('MOODLE_INTERNAL') || die();
+namespace local_instantcoursecompletion;
 
-$tasks = [
-    [
-        'classname' => '\local_instantcoursecompletion\task\discover_due_criteria_task',
-        'minute' => '7',
-        'hour' => '*',
-        'day' => '*',
-        'month' => '*',
-        'dayofweek' => '*',
-    ],
-    [
-        'classname' => '\local_instantcoursecompletion\task\reconcile_task',
-        'minute' => '17',
-        'hour' => '*/6',
-        'day' => '*',
-        'month' => '*',
-        'dayofweek' => '*',
-    ],
-];
+use local_instantcoursecompletion\task\book_due_completion_batch_task;
+
+/**
+ * A batch task with no wall-clock budget, so its first iteration always times out.
+ */
+class book_due_completion_batch_task_zero_runtime extends book_due_completion_batch_task {
+    /**
+     * No budget: the run stops after the first user.
+     *
+     * @return int
+     */
+    protected function max_runtime(): int {
+        return 0;
+    }
+}

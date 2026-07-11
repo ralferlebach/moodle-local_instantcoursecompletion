@@ -32,11 +32,14 @@ use local_instantcoursecompletion\task\discover_due_criteria_task;
 defined('MOODLE_INTERNAL') || die();
 
 require_once(__DIR__ . '/fixtures/completion_test_trait.php');
+require_once(__DIR__ . '/fixtures/discover_due_criteria_task_zero_runtime.php');
 
 /**
  * Discovery task tests.
  *
  * @covers \local_instantcoursecompletion\task\discover_due_criteria_task
+ * @covers \local_instantcoursecompletion\completion_course_repository
+ * @covers \local_instantcoursecompletion\due_candidate_repository
  * @covers \local_instantcoursecompletion\task\book_due_completion_batch_task
  */
 final class discover_due_criteria_task_test extends \advanced_testcase {
@@ -74,6 +77,29 @@ final class discover_due_criteria_task_test extends \advanced_testcase {
         (new discover_due_criteria_task())->execute();
 
         $this->assertCount(0, $this->queued_tasks());
+    }
+
+    /**
+     * A run that exhausts its wall-clock budget stops and leaves its cursor to resume.
+     *
+     * @return void
+     */
+    public function test_execute_persists_the_cursor_when_it_runs_out_of_time(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $criterionid = $this->add_date_criterion($course, time() + DAYSECS * 3);
+        $this->enrol_user_direct($course, $user);
+
+        (new discover_due_criteria_task_zero_runtime())->execute();
+
+        // With no budget the run stops before planning and leaves the cursor on the course
+        // and criterion, so the next run resumes exactly there.
+        $this->assertCount(0, $this->queued_tasks());
+
+        $cursor = json_decode(get_config('local_instantcoursecompletion', 'schedulecursor'), true);
+        $this->assertSame((int)$course->id, (int)$cursor['courseid']);
+        $this->assertSame($criterionid, (int)$cursor['criteriaid']);
+        $this->assertSame(0, (int)$cursor['lastuserid']);
     }
 
     /**

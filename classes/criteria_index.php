@@ -31,6 +31,9 @@ class criteria_index {
     /** @var string Frankenstyle component name. */
     protected const COMPONENT = 'local_instantcoursecompletion';
 
+    /** @var int Fallback cap applied when no positive limit is given, so a call is never unbounded. */
+    protected const MAX_DEPENDENTS = 1000;
+
     /**
      * The criterion types configured for a course.
      *
@@ -100,7 +103,7 @@ class criteria_index {
      *
      * @param int $courseid     The prerequisite course.
      * @param int $fromcourseid Only dependent courses with a higher ID are returned.
-     * @param int $limit        Maximum number of course IDs to return.
+     * @param int $limit        Maximum number of course IDs to return; 0 or less applies a safe cap.
      * @return int[] IDs of the dependent, completion-enabled courses, ordered ascending.
      */
     public static function dependent_course_ids(int $courseid, int $fromcourseid = 0, int $limit = 0): array {
@@ -110,6 +113,9 @@ class criteria_index {
         if ($courseid <= 0) {
             return [];
         }
+
+        // Never run unbounded: get_records_sql() treats a limit of 0 as "all rows".
+        $effectivelimit = $limit > 0 ? $limit : self::MAX_DEPENDENTS;
 
         // A fieldset query takes no limit; get_records_sql() keys by the first column.
         $records = $DB->get_records_sql(
@@ -125,7 +131,7 @@ class criteria_index {
                 'fromcourseid' => $fromcourseid,
             ],
             0,
-            $limit
+            $effectivelimit
         );
 
         return array_map('intval', array_keys($records));

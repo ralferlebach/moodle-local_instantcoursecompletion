@@ -24,6 +24,8 @@
 
 namespace local_instantcoursecompletion\task;
 
+use local_instantcoursecompletion\completion_course_repository;
+use local_instantcoursecompletion\due_candidate_repository;
 use local_instantcoursecompletion\due_scheduler;
 use local_instantcoursecompletion\scope_resolver;
 
@@ -39,6 +41,22 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
+
+    /** @var int Seconds of wall-clock time one run scans before persisting its cursor and stopping. */
+    protected const MAX_RUNTIME = 30;
+
+    /**
+     * The wall-clock budget for one run.
+     *
+     * A seam for tests. Discovery only plans, but it holds the per-course lock while it
+     * scans, so a slow scan is bounded by time as well as by row count; a run that hits the
+     * budget persists its cursor and the next run resumes there.
+     *
+     * @return int Seconds.
+     */
+    protected function max_runtime(): int {
+        return self::MAX_RUNTIME;
+    }
 
     /**
      * Human-readable task name for the admin UI.
@@ -75,7 +93,11 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         $logging = (bool)get_config(self::COMPONENT, 'enablelogging');
 
         $cursor = $this->get_cursor();
-        $courseids = $this->eligible_course_ids($cursor['courseid'], $horizon);
+        $courseids = completion_course_repository::get_time_criteria_course_ids_after(
+            $cursor['courseid'],
+            $horizon,
+            self::MAX_COURSES_PER_RUN
+        );
         if (empty($courseids)) {
             $this->set_cursor(0, 0, 0);
             return;
@@ -85,6 +107,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         $planned = 0;
         $failed = 0;
         $exhausted = false;
+        $deadline = microtime(true) + $this->max_runtime();
 
         foreach ($courseids as $courseid) {
             if ($scanned >= $budget) {
@@ -110,7 +133,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
             try {
                 try {
-                    $result = $this->schedule_course($courseid, $resume[0], $resume[1], $horizon, $budget - $scanned);
+                    $result = $this->schedule_course($courseid, $resume[0], $resume[1], $horizon, $budget - $scanned, $deadline);
                 } finally {
                     $lock->release();
                 }
@@ -134,6 +157,11 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             }
 
             $this->set_cursor($courseid + 1, 0, 0);
+
+            if (microtime(true) >= $deadline) {
+                $exhausted = true;
+                break;
+            }
         }
 
         if (!$exhausted && count($courseids) < self::MAX_COURSES_PER_RUN) {
@@ -186,46 +214,14 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     }
 
     /**
-     * Courses carrying a time-based criterion that falls due within the horizon.
-     *
-     * @param int $fromcourseid Lowest course ID to return; the cursor may point inside it.
-     * @param int $horizon      Latest due time being planned for.
-     * @return int[] Ordered course IDs, at most MAX_COURSES_PER_RUN of them.
-     */
-    protected function eligible_course_ids(int $fromcourseid, int $horizon): array {
-        global $DB;
-
-        // A fieldset query takes no limit; get_records_sql() keys by the first column.
-        $records = $DB->get_records_sql(
-            "SELECT DISTINCT cc.course
-               FROM {course_completion_criteria} cc
-               JOIN {course} c ON c.id = cc.course AND c.enablecompletion = 1
-              WHERE cc.course <> :siteid AND cc.course >= :fromcourseid
-                AND ((cc.criteriatype = :datetype AND cc.timeend > 0 AND cc.timeend <= :horizon)
-                  OR (cc.criteriatype = :durationtype AND cc.enrolperiod > 0))
-           ORDER BY cc.course ASC",
-            [
-                'siteid' => SITEID,
-                'fromcourseid' => $fromcourseid,
-                'datetype' => COMPLETION_CRITERIA_TYPE_DATE,
-                'horizon' => $horizon,
-                'durationtype' => COMPLETION_CRITERIA_TYPE_DURATION,
-            ],
-            0,
-            self::MAX_COURSES_PER_RUN
-        );
-
-        return array_map('intval', array_keys($records));
-    }
-
-    /**
      * Plan the due bookings of one course, resuming from the cursor.
      *
-     * @param int $courseid         Course to plan.
-     * @param int $resumecriteriaid Criterion to resume at, 0 for the first.
-     * @param int $resumeuserid     Last user examined for that criterion.
-     * @param int $horizon          Latest due time being planned for.
-     * @param int $budget           Maximum number of enrolment rows to examine.
+     * @param int   $courseid         Course to plan.
+     * @param int   $resumecriteriaid Criterion to resume at, 0 for the first.
+     * @param int   $resumeuserid     Last user examined for that criterion.
+     * @param int   $horizon          Latest due time being planned for.
+     * @param int   $budget           Maximum number of enrolment rows to examine.
+     * @param float $deadline         microtime() after which to stop and report a resume point.
      * @return array{planned: int, scanned: int, stopped: null|int[]} Position to resume at, or null when done.
      */
     protected function schedule_course(
@@ -233,7 +229,8 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         int $resumecriteriaid,
         int $resumeuserid,
         int $horizon,
-        int $budget
+        int $budget,
+        float $deadline
     ): array {
         $planned = 0;
         $scanned = 0;
@@ -245,7 +242,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             }
             $fromuserid = ($criteriaid === $resumecriteriaid) ? $resumeuserid : 0;
 
-            if ($scanned >= $budget) {
+            if ($scanned >= $budget || microtime(true) >= $deadline) {
                 return ['planned' => $planned, 'scanned' => $scanned, 'stopped' => [$criteriaid, $fromuserid]];
             }
 
@@ -284,8 +281,6 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         int $horizon,
         int $limit
     ): array {
-        global $DB;
-
         $idle = ['planned' => 0, 'scanned' => 0, 'lastuserid' => $fromuserid, 'more' => false];
         $criteriaid = (int)$criterion->id;
 
@@ -295,7 +290,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
                 return $idle;
             }
 
-            if (!$this->date_criterion_has_pending_users($courseid, $criteriaid)) {
+            if (!due_candidate_repository::has_pending_date_users($courseid, $criteriaid)) {
                 return ['planned' => 0, 'scanned' => 1, 'lastuserid' => 0, 'more' => false];
             }
 
@@ -311,14 +306,19 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         }
 
         $latest = $horizon - $enrolperiod;
-        [$sql, $params] = $this->duration_user_sql($courseid, $criteriaid, $fromuserid, $latest);
 
         $planned = 0;
         $scanned = 0;
         $lastuserid = $fromuserid;
         $buckets = [];
 
-        $recordset = $DB->get_recordset_sql($sql, $params, 0, $limit);
+        $recordset = due_candidate_repository::get_duration_candidates(
+            $courseid,
+            $criteriaid,
+            $fromuserid,
+            $latest,
+            $limit
+        );
         foreach ($recordset as $record) {
             $scanned++;
             $lastuserid = (int)$record->userid;
@@ -337,78 +337,5 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
         // A full page means there may be more rows behind it.
         return ['planned' => $planned, 'scanned' => $scanned, 'lastuserid' => $lastuserid, 'more' => $scanned >= $limit];
-    }
-
-    /**
-     * Does any tracked user still owe this date criterion?
-     *
-     * A date criterion is course-wide, so one existence check replaces a scan over every
-     * enrolled user, and one batch task replaces one task per user.
-     *
-     * @param int $courseid   Course ID.
-     * @param int $criteriaid Criterion ID.
-     * @return bool
-     */
-    protected function date_criterion_has_pending_users(int $courseid, int $criteriaid): bool {
-        global $DB;
-
-        $context = \context_course::instance($courseid);
-        [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
-        $params['courseid'] = $courseid;
-        $params['criteriaid'] = $criteriaid;
-
-        $sql = "SELECT enrolled.id AS userid
-                  FROM ($enrolledsql) enrolled
-             LEFT JOIN {course_completions} cco
-                    ON cco.userid = enrolled.id AND cco.course = :courseid
-             LEFT JOIN {course_completion_crit_compl} ccc
-                    ON ccc.userid = enrolled.id AND ccc.criteriaid = :criteriaid
-                 WHERE (cco.timecompleted IS NULL OR cco.timecompleted = 0)
-                   AND ccc.id IS NULL";
-
-        return $DB->record_exists_sql($sql, $params);
-    }
-
-    /**
-     * Tracked users of a course whose duration criterion falls due by $latest, after $fromuserid.
-     *
-     * The earliest enrolment wins, and an enrolment without a start date counts from its
-     * creation time; both rules match completion_criteria_duration::cron(). The horizon
-     * is applied to the enrolment time rather than to the computed due time, so no
-     * arithmetic is performed on the aggregate.
-     *
-     * @param int $courseid   Course ID.
-     * @param int $criteriaid Criterion ID.
-     * @param int $fromuserid Only users with a higher ID are returned.
-     * @param int $latest     Latest enrolment time that still falls due inside the horizon.
-     * @return array{0: string, 1: array} SQL and parameters.
-     */
-    protected function duration_user_sql(int $courseid, int $criteriaid, int $fromuserid, int $latest): array {
-        $context = \context_course::instance($courseid);
-        [$enrolledsql, $params] = get_enrolled_sql($context, due_scheduler::TRACKED_CAPABILITY, 0, true);
-        $params['courseid'] = $courseid;
-        $params['courseid2'] = $courseid;
-        $params['criteriaid'] = $criteriaid;
-        $params['fromuserid'] = $fromuserid;
-        $params['latest'] = $latest;
-
-        $started = 'MIN(CASE WHEN ue.timestart > 0 THEN ue.timestart ELSE ue.timecreated END)';
-
-        $sql = "SELECT enrolled.id AS userid, $started AS timeenrolled
-                  FROM ($enrolledsql) enrolled
-                  JOIN {user_enrolments} ue ON ue.userid = enrolled.id
-                  JOIN {enrol} e ON e.id = ue.enrolid AND e.courseid = :courseid
-             LEFT JOIN {course_completions} cco
-                    ON cco.userid = enrolled.id AND cco.course = :courseid2
-             LEFT JOIN {course_completion_crit_compl} ccc
-                    ON ccc.userid = enrolled.id AND ccc.criteriaid = :criteriaid
-                 WHERE (cco.timecompleted IS NULL OR cco.timecompleted = 0)
-                   AND ccc.id IS NULL
-                   AND enrolled.id > :fromuserid
-              GROUP BY enrolled.id
-                HAVING $started > 0 AND $started <= :latest
-              ORDER BY enrolled.id ASC";
-
-        return [$sql, $params];
     }
 }
