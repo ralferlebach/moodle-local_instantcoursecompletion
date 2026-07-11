@@ -42,6 +42,22 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     /** @var int Upper bound on the courses inspected in one run. */
     protected const MAX_COURSES_PER_RUN = 200;
 
+    /** @var int Seconds of wall-clock time one run scans before persisting its cursor and stopping. */
+    protected const MAX_RUNTIME = 30;
+
+    /**
+     * The wall-clock budget for one run.
+     *
+     * A seam for tests. Discovery only plans, but it holds the per-course lock while it
+     * scans, so a slow scan is bounded by time as well as by row count; a run that hits the
+     * budget persists its cursor and the next run resumes there.
+     *
+     * @return int Seconds.
+     */
+    protected function max_runtime(): int {
+        return self::MAX_RUNTIME;
+    }
+
     /**
      * Human-readable task name for the admin UI.
      *
@@ -91,6 +107,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         $planned = 0;
         $failed = 0;
         $exhausted = false;
+        $deadline = microtime(true) + $this->max_runtime();
 
         foreach ($courseids as $courseid) {
             if ($scanned >= $budget) {
@@ -116,7 +133,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
 
             try {
                 try {
-                    $result = $this->schedule_course($courseid, $resume[0], $resume[1], $horizon, $budget - $scanned);
+                    $result = $this->schedule_course($courseid, $resume[0], $resume[1], $horizon, $budget - $scanned, $deadline);
                 } finally {
                     $lock->release();
                 }
@@ -140,6 +157,11 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             }
 
             $this->set_cursor($courseid + 1, 0, 0);
+
+            if (microtime(true) >= $deadline) {
+                $exhausted = true;
+                break;
+            }
         }
 
         if (!$exhausted && count($courseids) < self::MAX_COURSES_PER_RUN) {
@@ -194,11 +216,12 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
     /**
      * Plan the due bookings of one course, resuming from the cursor.
      *
-     * @param int $courseid         Course to plan.
-     * @param int $resumecriteriaid Criterion to resume at, 0 for the first.
-     * @param int $resumeuserid     Last user examined for that criterion.
-     * @param int $horizon          Latest due time being planned for.
-     * @param int $budget           Maximum number of enrolment rows to examine.
+     * @param int   $courseid         Course to plan.
+     * @param int   $resumecriteriaid Criterion to resume at, 0 for the first.
+     * @param int   $resumeuserid     Last user examined for that criterion.
+     * @param int   $horizon          Latest due time being planned for.
+     * @param int   $budget           Maximum number of enrolment rows to examine.
+     * @param float $deadline         microtime() after which to stop and report a resume point.
      * @return array{planned: int, scanned: int, stopped: null|int[]} Position to resume at, or null when done.
      */
     protected function schedule_course(
@@ -206,7 +229,8 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
         int $resumecriteriaid,
         int $resumeuserid,
         int $horizon,
-        int $budget
+        int $budget,
+        float $deadline
     ): array {
         $planned = 0;
         $scanned = 0;
@@ -218,7 +242,7 @@ class discover_due_criteria_task extends \core\task\scheduled_task {
             }
             $fromuserid = ($criteriaid === $resumecriteriaid) ? $resumeuserid : 0;
 
-            if ($scanned >= $budget) {
+            if ($scanned >= $budget || microtime(true) >= $deadline) {
                 return ['planned' => $planned, 'scanned' => $scanned, 'stopped' => [$criteriaid, $fromuserid]];
             }
 

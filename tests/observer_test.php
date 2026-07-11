@@ -51,22 +51,8 @@ final class observer_test extends \advanced_testcase {
         require_once($CFG->libdir . '/completionlib.php');
         $this->resetAfterTest(true);
         $this->preventResetByRollback();
-        $this->reset_observer_seen();
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
-    }
-
-    /**
-     * Clear the observer's per-request de-duplication registry between tests.
-     *
-     * The registry is a private static that advanced_testcase does not reset on its own,
-     * and this suite suppresses the rollback reset, so it must clear it itself.
-     *
-     * @return void
-     */
-    private function reset_observer_seen(): void {
-        $property = new \ReflectionProperty(observer::class, 'seen');
-        $property->setValue(null, []);
     }
 
     /**
@@ -125,9 +111,42 @@ final class observer_test extends \advanced_testcase {
         $this->assertSame((int)$course->id, (int)$data->courseid);
         $this->assertSame((int)$user->id, (int)$data->userid);
 
-        // The learner is the task owner so the de-duplication lookup uses the indexed
-        // userid column.
-        $this->assertSame((int)$user->id, (int)$task->get_userid());
+        // The booking runs as a system task, not as the learner: a suspended learner must
+        // not cause core to discard it.
+        $this->assertNull($task->get_userid());
+    }
+
+    /**
+     * A later trigger re-queues once the earlier task has left the queue.
+     *
+     * This is the process-lifetime regression: cron runs many ad-hoc tasks in one PHP
+     * process, so a trigger must not be suppressed by state left behind from an earlier
+     * task in the same process. Deliberately no reflection reset — that would hide the very
+     * problem. The pattern is: prerequisite A completes and books course C (still
+     * incomplete), then prerequisite B completes and must re-trigger C.
+     *
+     * @return void
+     */
+    public function test_trigger_requeues_after_the_earlier_task_left_the_queue(): void {
+        $course = $this->getDataGenerator()->create_course();
+        $user = $this->getDataGenerator()->create_user();
+
+        // First trigger queues a booking.
+        observer::handle_completion_trigger((int)$course->id, (int)$user->id);
+        $this->assertCount(1, $this->queued_tasks());
+
+        // The booking runs and leaves the queue.
+        \core\task\manager::reset_state();
+        $ran = \core\task\manager::get_next_adhoc_task(time() + 1, false, book_completion_task::class);
+        $this->assertNotNull($ran);
+        \core\task\manager::adhoc_task_complete($ran);
+        $this->resetDebugging();
+
+        $this->assertCount(0, $this->queued_tasks());
+
+        // A later trigger for the same pair, still in this process, must queue again.
+        observer::handle_completion_trigger((int)$course->id, (int)$user->id);
+        $this->assertCount(1, $this->queued_tasks());
     }
 
     /**
@@ -386,7 +405,6 @@ final class observer_test extends \advanced_testcase {
         $notifications = $this->queued_notifications();
         $this->assertCount(1, $notifications);
 
-        $this->reset_observer_seen();
         reset($notifications)->execute();
         $this->resetDebugging();
 
@@ -411,7 +429,6 @@ final class observer_test extends \advanced_testcase {
         $completion->mark_complete();
         $this->resetDebugging();
 
-        $this->reset_observer_seen();
         foreach ($this->queued_notifications() as $task) {
             $task->execute();
         }

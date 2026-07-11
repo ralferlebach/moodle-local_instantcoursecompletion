@@ -45,11 +45,11 @@ Haupt-Dependencies:
 
 ### D) Aktueller Entwicklungsstand
 
-**Version:** 0.4.10 (2026070916), MATURITY_BETA — lokal und in der CI grün.
+**Version:** 1.0.0 (2026071100), MATURITY_STABLE — make check lokal grün stellen, dann taggen.
 
 **Versions-Konvention:**
   MINOR-Increment pro Feature-Patch; reine Fixes kein eigenes Increment.
-  Session 005 beginnt mit 0.5.0 (die Booker-API ändert sich).
+  Ab 1.0.0 SemVer: PATCH für Fixes, MINOR für Features, MAJOR für Brüche.
 
 **Grundsatz (nicht ohne explizite Diskussion ändern):**
   Lesart A — KEINE eigene Abschlusslogik. Das Plugin wertet vorhandene Moodle-
@@ -58,67 +58,29 @@ Haupt-Dependencies:
   an vier Stellen, an denen Moodle mit sich selbst uneins ist. Siehe README,
   Abschnitt „Compatibility logic".
 
-**Zuletzt abgeschlossen (Session 004):**
-  Phasen A–E des Review-Stacks, 17 Patches (0.4.0 – 0.4.10).
-  - completion_booker auf die Core-Pipeline umgestellt:
-      get_user_completion() → review() → aggregate_completions()
-  - self/role-Kriterien wurden zuvor NIE erkannt (falscher Objekttyp an review())
-  - Fortschrittsgarantie: Keyset-Cursor in Discovery und Reconcile; Budget zählt
-    geprüfte Zeilen, nicht eingereihte Tasks
-  - Nur getrackte Nutzer (moodle/course:isincompletionreports)
-  - Batch-Tasks je (courseid, criteriaid, duebucket) statt eines Tasks je Nutzer
-  - Queue-Korrektheit über reschedule_or_queue_adhoc_task(); kein {task_adhoc}-Prefetch
-  - Locks: course_lock (Discovery vs. Observer), (courseid,userid)-Lock im Booker
-  - Synchron-Modus entfernt; Privacy-Provider mit core_log-Subsystem-Link
-  - 117 PHPUnit-Testmethoden (vorher 19), 7 Behat-Szenarien
-  - CI: Selenium auf --network host; makefile bricht bei fehlgeschlagenem init.php ab
+**Zuletzt abgeschlossen (Session 005 → 1.0.0):**
+  Phasen F, G, H (0.5.0–0.5.6) plus zweite Audit-Runde, jede Behauptung gegen Quelltext geprüft.
+  - P0 observer::$seen entfernt (Statik überlebte den Cron-Prozess über Ad-hoc-Tasks;
+    berechtigte Re-Trigger in Prerequisite-Ketten gingen verloren). Dedup jetzt über
+    queue_adhoc_task(…, true) + (Kurs,Nutzer)-Lock. Requeue-Regressionstest ohne Reflection.
+  - book_completion_task ohne set_userid → Systemtask (H6 bewusst umgekehrt: gesperrter Nutzer
+    hätte core den Task verwerfen lassen → stiller Buchungsverlust).
+  - Batch-Fehlerpfad: bei systemischen Fehlern nur throw, keine Parallel-Fortsetzung.
+  - Discovery-Wanduhr-Budget (MAX_RUNTIME=30, max_runtime()-Seam), Deadline bis in die
+    Kriterienschleife (begrenzt die Lock-Haltedauer); Cursor-Persistenz + zero-runtime-Fixture/Test.
+  - observer::report_failure(): debugging() immer, mtrace() unter CLI_SCRIPT.
+  - db/tasks.php ohne 'blocking'; dependent_course_ids-Cap (MAX_DEPENDENTS=1000).
+  - README auf moodle-an-hochschulen-Vorlage; course_booker-Historie raus.
+  - version.php: 1.0.0 / MATURITY_STABLE (2026071100).
 
-**Als nächstes geplant (Session 005):**
-
-  Phase F — Konsolidierung des Buchungspfads (Ziel 0.5.0):
-    F1 (P0) classes/course_booker.php (248 Zeilen, TOT) und completion_booker zu
-            EINEM kursbezogenen, gelockten Service vereinigen. for_course() hält
-            course, completion_info, criteria. book() bleibt dünne Fassade.
-            course_booker.php löschen. NICHT einfach aktivieren — ihm fehlt der Lock.
-    F2 (P0) reconcile_task: Booker einmal je Kurs erzeugen, dann book_user() je Nutzer.
-            Aktuell ruft er completion_booker::book() je Nutzer und lädt dabei
-            get_course() und get_criteria() erneut (2 DB-Reads/Nutzer).
-    F3 (P0) cachedef_scopetagids fehlt in beiden Sprachdateien.
-            setting:maxtasksperrun heißt noch „Maximum bookings planned per run".
-            setting:schedulingenabled_desc beschreibt noch Task pro Kurs/Nutzer/Fälligkeit.
-            README: „None of the three grows with the number of courses" ist für
-            scopecoursemembership falsch.
-    F4 (P0) Query-Count-Regressionstest: 100 Nutzer, ein Kurs, $DB->perf_get_reads().
-    F5 (P1) Toten Code entfernen: observer::reset_seen() (nur von Tests genutzt),
-            scope_resolver::csv_to_strings() (Alias auf split_list()).
-            Noch im Repo, obwohl längst ersetzt:
-              classes/task/book_due_completion_task.php
-              tests/fixtures/due_criteria_test_trait.php
-              tests/generator/lib.php
-
-  Phase G — DRY und Betriebssicherheit (Ziel 0.6.0):
-    G1 due_candidate_repository (die „fälliger Nutzer"-Abfrage steht viermal)
-    G2 completion_course_repository::get_course_ids_after() (Discovery + Reconcile)
-    G3 schedule_user(): eine Abfrage für verbuchte Kriterien, eine für den
-       Einschreibezeitpunkt (aktuell K + D Einzelabfragen)
-    G4 Lock je (courseid, criteriaid) im Batch-Task gegen überlappende Ketten
-    G5 Maxima senken (batchsize ≤ 2000, maxtasksperrun ≤ 50000, reconcilebudget ≤ 10000)
-       plus Laufzeitbudget mit Fortsetzung
-    G6 queue_bucket()/queue_continuation() auf eine private queue_task() zusammenführen
-
-  Phase H — Release-Disziplin (Ziel 0.6.x):
-    H1 moodle-release.yml: `phpcpd || true` entfernen (der Check kann den Build nie brechen
-       — genau deshalb blieb course_booker unbemerkt)
-    H2 Release-Job: git diff --exit-code, keine untracked Dateien, Paket aus git archive
-    H3 Workflow-Kopf nennt für 5.2 PHP 8.5, die Matrix schließt es aus; Workflows
-       über workflow_call zusammenführen
-    H4 Test: jede Definition in db/caches.php besitzt einen cachedef_*-String
-    H5 Entscheidungs-/Historienkommentare aus dem Produktivcode entfernen (5 Fundstellen)
-    H6 set_userid() entscheiden (notify_dependent_courses_task streichen;
-       book_completion_task messen und Akteur im Event testen)
-
-  1.0.0 / MATURITY_STABLE erst nach F, G und einem Lasttest auf echter Instanz
-  (10.000 Fälligkeiten zum selben Zeitpunkt, Upgrade mit bestehenden Cursorn).
+**Als nächstes geplant (Session 006):**
+  - Absoluter Großlast-/Multi-DB-Instanztest als Freigabe-Gate hinter grünem make check
+    (feste Read-Budgets, MariaDB vs PostgreSQL, EXPLAIN; 10.000 Fälligkeiten zeitgleich,
+    Upgrade mit bestehenden Cursorn).
+  - CI H3b: workflow_call-Merge der zwei komplementären Matrizen (kanonische Matrix wählen).
+  - Optional: Rollen-Kriterium; volles Monitoring (Fehlerzähler, Admin-Warnung, Health-Check).
+  - Offen/harmlos: upgrade.php doppelte Task-Löschung (nur konsolidieren, falls 0.4.x-
+    Zwischenversionen nie verteilt wurden); eigene Planungstabelle für historische Datums-Kriterien.
 
 ---
 
