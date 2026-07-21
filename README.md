@@ -237,13 +237,10 @@ This plugin is maintained for Moodle 4.5, 5.0, 5.1 and 5.2. There may be several
 new major release of Moodle has been published until a compatibility check is done and
 problems are fixed if necessary.
 
-Continuous integration — PHPUnit, Behat and the Moodle coding standards across the supported
-Moodle, PHP and database matrix — is maintained in the GitHub repository and is not shipped in
-the plugin install package.
-
 ## Translating this plugin
 
-This plugin is shipped with English and German language packs.
+This Moodle plugin is shipped with an english language pack only. A german language pack is
+maintained by the author for local needs.
 
 ## Right-to-left support
 

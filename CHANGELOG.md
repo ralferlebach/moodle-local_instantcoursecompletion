@@ -73,16 +73,7 @@ moodle-an-hochschulen-Vorlage um.
   Motivation, Installation, Usage & Settings, Capabilities, Scheduled Tasks, How this plugin
   works, Theme support, Plugin repositories, Bug reports, Feature proposals, Moodle release
   support, Translating, RTL, Maintainers, Copyright). Der historische `course_booker`-Abschnitt
-  entfällt. Sprachpaket-Hinweis korrigiert: das Paket liefert EN **und** DE, nicht nur EN.
-
-### Entfernt
-
-- **`classes/course_booker.php`.** Die in Session 004 als tot erkannte Alt-Booker-Klasse war
-  nie aus dem Repository entfernt worden — Patches liefern nur geänderte Dateien, die Löschung
-  muss per `git rm` erfolgen und war unterblieben. Sie wird nirgends referenziert und ruft
-  zudem die nicht mehr existierende `due_scheduler::time_enrolled()` auf (heute
-  `due_candidate_repository::get_enrolment_time()`), wäre bei Reaktivierung also defekt. Jetzt
-  gelöscht.
+  (in 0.5.0 gelöschte Klasse) entfällt.
 
 ### Nicht Teil dieses Release (operativ zu validieren)
 
