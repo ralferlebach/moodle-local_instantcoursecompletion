@@ -46,6 +46,11 @@ final class notify_dependent_courses_task_test extends \advanced_testcase {
         $this->resetAfterTest(true);
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
+
+        // This task books dependent courses through observer::handle_completion_trigger().
+        // These tests assert on the resulting ad-hoc queue, which only the asynchronous
+        // mode fills; the synchronous default would book each dependent course in place.
+        set_config('processingmode', observer::MODE_ASYNC, 'local_instantcoursecompletion');
     }
 
     /**

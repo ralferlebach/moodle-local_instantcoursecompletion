@@ -53,6 +53,11 @@ final class observer_test extends \advanced_testcase {
         $this->preventResetByRollback();
         criteria_index::purge();
         set_config('scopemode', scope_resolver::SCOPE_ALL, 'local_instantcoursecompletion');
+
+        // These tests assert on the ad-hoc queue, which only the asynchronous mode fills.
+        // The synchronous default (booking in the request) is covered by its own tests,
+        // which set the mode explicitly.
+        set_config('processingmode', observer::MODE_ASYNC, 'local_instantcoursecompletion');
     }
 
     /**
@@ -79,16 +84,18 @@ final class observer_test extends \advanced_testcase {
      * @param int   $courseid Course ID.
      * @param int   $type     A COMPLETION_CRITERIA_TYPE_* constant.
      * @param array $extra    Additional record fields.
-     * @return void
+     * @return int The new criterion ID.
      */
-    protected function add_criterion(int $courseid, int $type, array $extra = []): void {
+    protected function add_criterion(int $courseid, int $type, array $extra = []): int {
         global $DB;
 
-        $DB->insert_record('course_completion_criteria', (object)array_merge([
+        $id = (int)$DB->insert_record('course_completion_criteria', (object)array_merge([
             'course' => $courseid,
             'criteriatype' => $type,
             'aggregationmethod' => COMPLETION_AGGREGATION_ALL,
         ], $extra));
+        criteria_index::purge($courseid);
+        return $id;
     }
 
     /**
@@ -435,5 +442,234 @@ final class observer_test extends \advanced_testcase {
         $this->resetDebugging();
 
         $this->assertCount(0, $this->queued_tasks());
+    }
+
+    /**
+     * The default mode is synchronous: a trigger books in the request, queuing nothing.
+     *
+     * @return void
+     */
+    public function test_default_processing_mode_is_synchronous(): void {
+        unset_config('processingmode', 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+
+        observer::handle_completion_trigger((int)$course->id, (int)$user->id);
+        $this->resetDebugging();
+
+        $this->assertCount(0, $this->queued_tasks());
+    }
+
+    /**
+     * The asynchronous fallback queues the booking instead of doing it in the request.
+     *
+     * @return void
+     */
+    public function test_async_mode_queues_the_booking(): void {
+        set_config('processingmode', observer::MODE_ASYNC, 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+
+        observer::handle_completion_trigger((int)$course->id, (int)$user->id);
+
+        $this->assertCount(1, $this->queued_tasks());
+    }
+
+    /**
+     * A passing grade books the course completion in the triggering request, no cron.
+     *
+     * This is the reported case: a course whose only criterion is the course grade, a
+     * learner who reaches the pass mark, and completion that must be booked -- and its
+     * course_completed event dispatched -- without waiting for a cron tick.
+     *
+     * @return void
+     */
+    public function test_grade_completion_is_booked_synchronously(): void {
+        set_config('processingmode', observer::MODE_SYNC, 'local_instantcoursecompletion');
+
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $this->enrol_tracked_user($course, $user);
+        $this->add_criterion((int)$course->id, COMPLETION_CRITERIA_TYPE_GRADE, ['gradepass' => 50.0]);
+
+        $this->set_course_grade($course, $user, 75.0);
+        observer::handle_completion_trigger((int)$course->id, (int)$user->id);
+        $this->resetDebugging();
+
+        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertCount(0, $this->queued_tasks());
+    }
+
+    /**
+     * Viewing the course after a self-completion aggregates it in the request and clears
+     * the reaggregation flag.
+     *
+     * Self-completion writes the criterion and flags the course for reaggregation without
+     * an event, then redirects the learner to the course. This course_viewed is that
+     * redirect: it must complete the course now and leave no flag behind that would make
+     * every later view repeat the work.
+     *
+     * @return void
+     */
+    public function test_course_viewed_books_self_completion_and_clears_reaggregate(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $this->enrol_tracked_user($course, $user);
+        $criteriaid = $this->add_criterion((int)$course->id, COMPLETION_CRITERIA_TYPE_SELF);
+
+        $this->mark_self_criterion($course, $user, $criteriaid);
+        $this->assertGreaterThan(0, $this->reaggregate_flag($course, $user));
+
+        $this->view_course($course, $user);
+
+        $this->assertTrue((new \completion_info($course))->is_course_complete((int)$user->id));
+        $this->assertSame(0, $this->reaggregate_flag($course, $user));
+    }
+
+    /**
+     * A course view with no pending reaggregation books nothing.
+     *
+     * @return void
+     */
+    public function test_course_viewed_ignores_view_without_pending_reaggregation(): void {
+        $course = $this->getDataGenerator()->create_course(['enablecompletion' => 1]);
+        $user = $this->getDataGenerator()->create_user();
+        $this->enrol_tracked_user($course, $user);
+        $this->add_criterion((int)$course->id, COMPLETION_CRITERIA_TYPE_SELF);
+
+        $this->view_course($course, $user);
+
+        $this->assertFalse((new \completion_info($course))->is_course_complete((int)$user->id));
+    }
+
+    /**
+     * Enrol a user as a tracked student without firing user_enrolment_created.
+     *
+     * Other installed plugins observe that event with code that misbehaves under
+     * PHPUnit, so the enrolment is inserted directly. The student role is what makes the
+     * user tracked (moodle/course:isincompletionreports); an untracked user is booked by
+     * nothing here.
+     *
+     * @param \stdClass $course Course record.
+     * @param \stdClass $user   User record.
+     * @return void
+     */
+    protected function enrol_tracked_user(\stdClass $course, \stdClass $user): void {
+        global $DB;
+
+        $now = time();
+        $enrolrec = $DB->get_record('enrol', ['courseid' => $course->id, 'enrol' => 'manual']);
+        $enrolid = $enrolrec ? (int)$enrolrec->id : $DB->insert_record('enrol', (object)[
+            'enrol' => 'manual',
+            'courseid' => (int)$course->id,
+            'status' => 0,
+            'sortorder' => 0,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
+
+        $DB->insert_record('user_enrolments', (object)[
+            'enrolid' => $enrolid,
+            'userid' => (int)$user->id,
+            'status' => 0,
+            'timestart' => 0,
+            'timeend' => 0,
+            'modifierid' => 0,
+            'timecreated' => $now,
+            'timemodified' => $now,
+        ]);
+
+        $roleid = $DB->get_field('role', 'id', ['shortname' => 'student'], MUST_EXIST);
+        role_assign($roleid, (int)$user->id, \context_course::instance((int)$course->id)->id);
+
+        // Assigning the role fires role_assigned, which other plugins observe with debugging.
+        $this->resetDebugging();
+    }
+
+    /**
+     * Give the user a passing final grade through a real manual grade item.
+     *
+     * completion_criteria_grade::review() reads the course total, recomputed from its
+     * sub-items on every regrade; writing that column directly is discarded.
+     *
+     * @param \stdClass $course The course.
+     * @param \stdClass $user   The user.
+     * @param float     $grade  The final grade.
+     * @return void
+     */
+    protected function set_course_grade(\stdClass $course, \stdClass $user, float $grade): void {
+        global $CFG;
+        require_once($CFG->libdir . '/gradelib.php');
+
+        $gradeitem = new \grade_item([
+            'courseid' => (int)$course->id,
+            'itemtype' => 'manual',
+            'itemname' => 'Test manual grade item',
+            'gradetype' => GRADE_TYPE_VALUE,
+            'grademax' => 100,
+            'grademin' => 0,
+        ]);
+        $gradeitem->insert();
+        $gradeitem->update_final_grade((int)$user->id, $grade);
+        grade_regrade_final_grades((int)$course->id);
+
+        // Grading fires user_graded, which the observer acts on; a booking under the
+        // synchronous default can complete the course and emit debugging.
+        $this->resetDebugging();
+    }
+
+    /**
+     * Record a self criterion the way course/togglecompletion.php does for the block.
+     *
+     * mark_complete() writes the criterion completion and flags the course completion
+     * for reaggregation via mark_inprogress(), but does not aggregate and fires no event.
+     *
+     * @param \stdClass $course     The course.
+     * @param \stdClass $user       The user.
+     * @param int       $criteriaid The self criterion.
+     * @return void
+     */
+    protected function mark_self_criterion(\stdClass $course, \stdClass $user, int $criteriaid): void {
+        $criterioncompletion = new \completion_criteria_completion([
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+            'criteriaid' => $criteriaid,
+        ]);
+        $criterioncompletion->mark_complete();
+        $this->resetDebugging();
+    }
+
+    /**
+     * The current reaggregation flag on a user's course completion.
+     *
+     * @param \stdClass $course The course.
+     * @param \stdClass $user   The user.
+     * @return int
+     */
+    protected function reaggregate_flag(\stdClass $course, \stdClass $user): int {
+        global $DB;
+
+        return (int)$DB->get_field('course_completions', 'reaggregate', [
+            'course' => (int)$course->id,
+            'userid' => (int)$user->id,
+        ]);
+    }
+
+    /**
+     * Fire course_viewed for a user, as the redirect after self-completion does.
+     *
+     * @param \stdClass $course The course.
+     * @param \stdClass $user   The user.
+     * @return void
+     */
+    protected function view_course(\stdClass $course, \stdClass $user): void {
+        $this->setUser($user);
+        $event = \core\event\course_viewed::create([
+            'context' => \context_course::instance((int)$course->id),
+        ]);
+        observer::course_viewed($event);
+        $this->resetDebugging();
     }
 }

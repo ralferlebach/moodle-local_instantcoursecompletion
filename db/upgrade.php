@@ -69,5 +69,17 @@ function xmldb_local_instantcoursecompletion_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026070915, 'local', 'instantcoursecompletion');
     }
 
+    if ($oldversion < 2026072200) {
+        // The synchronous processing mode is back and is now the default. Sites upgrading
+        // from a version that had removed the setting have no stored value; make the
+        // default explicit so the behaviour and the settings page agree. A site that had
+        // deliberately kept async cannot exist, because the setting did not exist.
+        if (get_config('local_instantcoursecompletion', 'processingmode') === false) {
+            set_config('processingmode', 'sync', 'local_instantcoursecompletion');
+        }
+
+        upgrade_plugin_savepoint(true, 2026072200, 'local', 'instantcoursecompletion');
+    }
+
     return true;
 }

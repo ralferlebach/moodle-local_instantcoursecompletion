@@ -48,6 +48,13 @@ $observers = [
         'internal' => false,
     ],
     [
+        // Self-completion is recorded without an observable event; the redirect back to
+        // the course fires this, the first request in which it can be aggregated.
+        'eventname' => '\core\event\course_viewed',
+        'callback' => '\local_instantcoursecompletion\observer::course_viewed',
+        'internal' => false,
+    ],
+    [
         'eventname' => '\core\event\user_enrolment_created',
         'callback' => '\local_instantcoursecompletion\observer::user_enrolment_created',
         'internal' => false,
