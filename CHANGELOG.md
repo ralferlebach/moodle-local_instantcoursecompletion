@@ -6,6 +6,54 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.0] - 2026-07-22
+
+MINOR-Release. Führt die synchrone Verbuchung wieder ein und macht sie zum Standard, ergänzt
+einen Hook für den selbstvergebenen Kursabschluss und dokumentiert die Latenz je Kriteriumstyp.
+
+### Geändert — Synchrone Verbuchung als Standard (async als Rückfallebene)
+
+- Ereignisgetriebene Abschlüsse (`user_graded`, `course_module_completion_updated`) werden
+  standardmäßig wieder **im auslösenden Request** verbucht, sodass die Aggregation und das
+  `course_completed`-Ereignis ohne Cron-Tick erfolgen. Das kehrt die Entfernung aus 0.4.5
+  bewusst um: deren Begründung — „der Ad-hoc-Task läuft ohnehin beim nächsten Cron-Lauf" —
+  trägt nicht, wenn Cron deaktiviert oder langsam ist. Synchrone Folgereaktionen auf
+  `course_completed` (etwa ein Lernpfad in `local_adele`, der `course_completed` vollständig
+  synchron und ohne eigenen Task verarbeitet) feuern dann nie.
+- Neue Einstellung **Abschlussverarbeitung** (`processingmode`, `sync`/`async`), Standard
+  `sync`. Der `async`-Modus reiht die Buchung weiterhin als Systemtask ein und bleibt die
+  Wahl für sehr große Wirkungsbereiche, in denen die Auswertung nicht im Request erfolgen
+  soll. Ein Upgrade-Schritt setzt für Bestandsinstallationen ohne gespeicherten Wert `sync`
+  explizit, damit Verhalten und Einstellungsseite übereinstimmen.
+
+### Hinzugefügt — Hook für den selbstvergebenen Kursabschluss (`course_viewed`)
+
+- Der Selbstabschluss wird von `course/togglecompletion.php` ohne abfangbares Ereignis
+  verbucht; die Seite leitet danach jedoch auf den Kurs um. Der Observer nutzt das
+  `course_viewed` dieser Umleitung als Auslöser und aggregiert den Abschluss im selben
+  Request. Der Gate ist bewusst günstig, da `course_viewed` das häufigste Ereignis der
+  Instanz ist: er greift nur bei Kursen mit Self-Kriterium (gecachter Typ-Lookup), im
+  Wirkungsbereich und mit gesetztem `reaggregate`-Flag. Das Flag setzt `mark_inprogress()`
+  beim Self-Mark; `aggregate_completions()` setzt es nach der Verbuchung wieder zurück, sodass
+  Folge-Views keine Arbeit auslösen.
+
+### Dokumentiert — Latenz je Kriteriumstyp; Fremdabschluss bleibt cron-basiert
+
+- Der fremdvergebene (rollenbasierte) Abschluss besitzt weder ein Kern-Ereignis noch ein
+  Signal im Request — die Lehrkraft markiert ihn im Abschlussbericht, ohne dass die
+  lernende Person anwesend ist. Er bleibt daher dem Sicherheitsnetz-Task (Reconcile)
+  überlassen; die README dokumentiert dies zusammen mit einer Tabelle „When each completion
+  is booked", die für jeden Auslöser Ereignis, Verbucher und Latenz nennt.
+
+### Tests
+
+- Neue Observer-Tests: synchroner Standard verbucht ohne Queue, `async` reiht ein, ein
+  bestandenes Grade-Kriterium wird synchron verbucht, `course_viewed` verbucht den
+  Selbstabschluss und löscht das `reaggregate`-Flag, und ein Aufruf ohne anstehende
+  Reaggregation verbucht nichts. Die bestehenden queue-prüfenden Tests laufen unter `async`.
+
+---
+
 ## [1.0.0] - 2026-07-11
 
 Erstes stabiles Release. `maturity` von `MATURITY_BETA` auf `MATURITY_STABLE`, `release`

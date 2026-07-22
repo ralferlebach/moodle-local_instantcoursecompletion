@@ -52,6 +52,7 @@ There you find these settings:
 | Observer scope | All courses | `all`, `categories` (selected category branches with optional include/exclude course tags) or `adele` (the filters configured in `local_adele`; empty if that plugin is absent). |
 | Category branches | — | Only used in the categories scope; resolved to include sub-categories. |
 | Included / excluded course tags | — | One per line or comma separated, matched against Moodle's normalised tag names. |
+| Completion processing | Synchronous | `sync` books each event-driven completion in the request that triggered it (no cron delay); `async` defers it to an ad-hoc task on the next cron run, which keeps the triggering request cheaper on very large scopes. Time-based planning and the safety-net task always run via cron regardless. |
 | Plan time-based criteria in advance | On | Enables the discovery task for date and duration criteria. |
 | Scheduling horizon | 7 days | Must exceed the discovery interval (hourly); the settings page warns if it does not. |
 | Users booked per batch task | 500 | 1 – 2000. |
@@ -142,13 +143,42 @@ transaction commits — a rolled-back activity completion leaves no queued task 
 narrowed before it does any work: `course_module_completion_updated` is skipped when the
 course has only activity criteria (core already aggregated them); `user_graded` is skipped
 when the course has no grade criterion; `course_completed` queues the dependent-course
-notification; and the enrolment events plan the time-based criteria of the affected user at
-once. The lookups go through `criteria_index`, a cached map of course to criterion types.
+notification; `course_viewed` is skipped unless the course has a self criterion with a
+pending aggregation (see below); and the enrolment events plan the time-based criteria of the
+affected user at once. The lookups go through `criteria_index`, a cached map of course to
+criterion types.
 
-The booking task runs in the system context, not as the learner. A learner suspended between
-the trigger and the run therefore cannot cause core to discard the booking, and the automated
-completion is not attributed to them. Identical pending `(course, user)` tasks are
-de-duplicated by the queue.
+By default the completion is booked **synchronously**, in the request that fired the trigger,
+so the completion and its `course_completed` event happen without waiting for cron. That is
+the point of the plugin: reactions to `course_completed` — a learning path advancing, a
+certificate issuing — are themselves synchronous, and deferring the booking to a task would
+defer all of them to the next cron run. The **asynchronous** mode is the fallback for very
+large scopes: it hands the booking to an ad-hoc task that runs in the system context, so a
+learner suspended between the trigger and the run cannot cause core to discard the booking and
+the automated completion is not attributed to them. Identical pending `(course, user)` tasks
+are de-duplicated by the queue either way.
+
+### When each completion is booked
+
+Not every criterion has an event to observe. Activity and grade completions do, and are booked
+in the request. Self-completion has none, but the Self completion block redirects the learner
+back to the course, so the `course_viewed` of that redirect serves as the trigger — gated to
+self-completion courses that carry a pending reaggregation flag, because `course_viewed` is
+the busiest event on the site. Manual completion by a teacher (a role criterion) has neither an
+event nor an in-request signal: the teacher marks it in the completion report and the learner
+is not present. It is therefore left to the safety-net reconcile task. That is acceptable
+precisely because the completion already required a human action, and there is no request in
+which it could be booked sooner; enable the reconcile task if such completions must be picked
+up without relying on the Moodle cron.
+
+| Trigger | Core event observed | Booked by | Latency |
+|---|---|---|---|
+| Activity marked complete | `course_module_completion_updated` | Core inline, or this plugin when other criteria are present | Instant |
+| Course grade reaches the pass mark | `user_graded` | This plugin, in the request | Instant |
+| Learner self-completes (Self completion block) | `course_viewed` (the redirect) | This plugin, on the returning view | Instant |
+| Teacher marks completion (role criterion) | none | Reconcile task, if enabled | Next reconcile run (cron) |
+| Date or duration criterion falls due | none | Discovery + batch task | Next batch window (cron) |
+| A prerequisite course is completed | `course_completed` | This plugin | Instant (sync) or next cron (async) |
 
 ### Scheduling time-based criteria
 

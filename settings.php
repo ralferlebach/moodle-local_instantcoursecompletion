@@ -26,6 +26,7 @@ defined('MOODLE_INTERNAL') || die();
 
 use local_instantcoursecompletion\admin\bounded_int_setting;
 use local_instantcoursecompletion\due_scheduler;
+use local_instantcoursecompletion\observer;
 use local_instantcoursecompletion\scope_resolver;
 
 if ($hassiteconfig) {
@@ -105,6 +106,17 @@ if ($hassiteconfig) {
         $setting->set_updatedcallback($purgecallback);
         $settings->add($setting);
         $settings->hide_if($component . '/excludetags', $component . '/scopemode', 'neq', scope_resolver::SCOPE_CATEGORIES);
+
+        $settings->add(new admin_setting_configselect(
+            $component . '/processingmode',
+            get_string('setting:processingmode', $component),
+            get_string('setting:processingmode_desc', $component),
+            observer::MODE_SYNC,
+            [
+                observer::MODE_SYNC => get_string('processingmode:sync', $component),
+                observer::MODE_ASYNC => get_string('processingmode:async', $component),
+            ]
+        ));
 
         $settings->add(new admin_setting_configcheckbox(
             $component . '/schedulingenabled',

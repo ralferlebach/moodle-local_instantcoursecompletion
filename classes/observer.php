@@ -32,6 +32,12 @@ use local_instantcoursecompletion\task\notify_dependent_courses_task;
  * Event observer implementation.
  */
 class observer {
+    /** @var string Book completions in the triggering request, with no cron delay. */
+    public const MODE_SYNC = 'sync';
+
+    /** @var string Book completions in an ad-hoc task on the next cron run. */
+    public const MODE_ASYNC = 'async';
+
     /**
      * React to an activity-completion state change.
      *
@@ -125,6 +131,59 @@ class observer {
     }
 
     /**
+     * Aggregate a self-completion the moment the learner returns to the course.
+     *
+     * Self and manual (role) criteria are recorded by the user or teacher action
+     * directly, without an event this plugin could observe; core leaves the
+     * course_completions row flagged for reaggregation but does not aggregate it until
+     * cron. The teacher (role) case has no in-request signal and stays with the reconcile
+     * task. The self case does have one: course/togglecompletion.php redirects the learner
+     * straight back to the course, so the course_viewed of that redirect is the first
+     * request after the mark and the place to aggregate it -- now, without cron.
+     *
+     * The gate is deliberately cheap, because course_viewed is the busiest event on the
+     * site: a course without a self criterion costs one cached lookup and returns; a
+     * self-completion course with nothing pending costs one further indexed read.
+     *
+     * @param \core\event\course_viewed $event The triggering event.
+     * @return void
+     */
+    public static function course_viewed(\core\event\course_viewed $event): void {
+        global $CFG;
+        require_once($CFG->libdir . '/completionlib.php');
+
+        $courseid = (int)$event->courseid;
+        $userid = (int)$event->userid;
+        try {
+            if ($courseid <= 0 || $userid <= 0 || $courseid == SITEID) {
+                return;
+            }
+
+            // Only self-completion courses need this path; everything else stops here.
+            if (!criteria_index::has_type($courseid, COMPLETION_CRITERIA_TYPE_SELF)) {
+                return;
+            }
+
+            if (!scope_resolver::is_in_scope($courseid)) {
+                return;
+            }
+
+            // Do the work only when an aggregation is actually pending. mark_inprogress()
+            // sets reaggregate when the self criterion is recorded, and the booking's
+            // aggregate_completions() clears it again, so a course viewed with nothing
+            // pending never books and a repeat view after booking stops at this read.
+            if (!self::has_pending_reaggregation($courseid, $userid)) {
+                return;
+            }
+
+            completion_booker::book($courseid, $userid);
+        } catch (\Throwable $e) {
+            self::report_failure('self-completion aggregation failed for'
+                . " course={$courseid} user={$userid}", $e);
+        }
+    }
+
+    /**
      * Plan the time-based bookings of one user, swallowing any failure.
      *
      * @param int $courseid Affected course ID.
@@ -213,11 +272,14 @@ class observer {
     }
 
     /**
-     * Handle a completion trigger: scope check, de-duplication, then enqueue.
+     * Handle a completion trigger: scope check, then book in the request or queue a task.
      *
-     * Booking never happens in the request. Completion evaluation reads the criteria,
-     * writes completion records, dispatches course_completed and sends a notification;
-     * none of that belongs on a learner's page load.
+     * By default the booking is synchronous, so the completion and its course_completed
+     * event happen in the triggering request without waiting for cron. Under the async
+     * fallback the work is handed to an ad-hoc task instead, which trades the immediacy
+     * for a cheaper request on very large scopes. Either way the completion evaluation
+     * reads the criteria, writes the completion records, dispatches course_completed and
+     * sends the notification.
      *
      * @param int $courseid Affected course ID.
      * @param int $userid   Affected user ID.
@@ -233,23 +295,84 @@ class observer {
                 return;
             }
 
-            $task = new book_completion_task();
-            $task->set_custom_data((object)[
-                'courseid' => $courseid,
-                'userid' => $userid,
-            ]);
+            if (self::processing_mode() === self::MODE_ASYNC) {
+                self::queue_booking($courseid, $userid);
+                return;
+            }
 
-            // The task runs in the system context, not as the learner. A learner suspended
-            // between the trigger and the run must not cause core to discard the booking, and
-            // the automated booking is not attributed to them. Identical pending (course, user)
-            // tasks are de-duplicated by the queue; once a booking has run and left the queue,
-            // the same trigger queues a fresh one, which is what lets a later prerequisite
-            // re-evaluate the course.
-            \core\task\manager::queue_adhoc_task($task, true);
+            // Synchronous is the default: the completion is booked in the request that
+            // triggered it, so aggregate_completions() and the course_completed event run
+            // now rather than on the next cron tick. That is the point of the plugin --
+            // downstream reactions to course_completed (a learning path advancing, a
+            // certificate issuing) are themselves synchronous, and deferring the booking to
+            // an ad-hoc task defers all of it to whenever cron next runs, which on a site
+            // with cron disabled or slow is indefinitely.
+            completion_booker::book($courseid, $userid);
         } catch (\Throwable $e) {
             self::report_failure('trigger handling failed for'
                 . " course={$courseid} user={$userid}", $e);
         }
+    }
+
+    /**
+     * Queue the asynchronous booking of one course-user pair.
+     *
+     * The fallback mode for very large scopes, where the completion evaluation is not
+     * wanted in the triggering request. The task runs in the system context, not as the
+     * learner: a learner suspended between the trigger and the run must not cause core to
+     * discard the booking, and the automated booking is not attributed to them. Identical
+     * pending (course, user) tasks are de-duplicated by the queue; once a booking has run
+     * and left the queue, the same trigger queues a fresh one, which is what lets a later
+     * prerequisite re-evaluate the course.
+     *
+     * @param int $courseid Affected course ID.
+     * @param int $userid   Affected user ID.
+     * @return void
+     */
+    protected static function queue_booking(int $courseid, int $userid): void {
+        $task = new book_completion_task();
+        $task->set_custom_data((object)[
+            'courseid' => $courseid,
+            'userid' => $userid,
+        ]);
+
+        \core\task\manager::queue_adhoc_task($task, true);
+    }
+
+    /**
+     * The configured completion-processing mode.
+     *
+     * Synchronous unless async is explicitly configured, so an unset value -- a fresh
+     * install, or a site upgraded from a version that had removed the setting -- books in
+     * the request rather than silently depending on cron.
+     *
+     * @return string One of MODE_SYNC or MODE_ASYNC.
+     */
+    protected static function processing_mode(): string {
+        $mode = get_config('local_instantcoursecompletion', 'processingmode');
+        return $mode === self::MODE_ASYNC ? self::MODE_ASYNC : self::MODE_SYNC;
+    }
+
+    /**
+     * Whether the user's course completion is flagged for reaggregation.
+     *
+     * The flag is core's own signal that a criterion completion was written without the
+     * course being aggregated afterwards. Reading it keeps the busy course_viewed path
+     * from evaluating criteria on a course where nothing has changed.
+     *
+     * @param int $courseid Course ID.
+     * @param int $userid   User ID.
+     * @return bool
+     */
+    protected static function has_pending_reaggregation(int $courseid, int $userid): bool {
+        global $DB;
+
+        $reaggregate = $DB->get_field('course_completions', 'reaggregate', [
+            'course' => $courseid,
+            'userid' => $userid,
+        ]);
+
+        return !empty($reaggregate);
     }
 
     /**
